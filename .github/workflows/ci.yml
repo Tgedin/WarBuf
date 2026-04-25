@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  test:
+    name: Lint · Test · Security · Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt ruff pip-audit
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ \
+            --cov=core --cov=broker --cov=db --cov=reporter \
+            --cov-fail-under=85 \
+            --cov-report=term-missing \
+            -v
+
+      - name: Security scan (pip-audit)
+        run: pip-audit --ignore-vuln PYSEC-2022-42974
+
+      - name: Build Docker image
+        run: docker build .
+
+  deploy:
+    name: Deploy to Hetzner
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          script: |
+            cd /home/warbuf/WarBuf
+            git pull origin main
+            docker compose up -d --build

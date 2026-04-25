@@ -1,0 +1,7 @@
+# Replace your-domain.com with your actual domain pointing to the Hetzner IP.
+
+# Caddy automatically issues and renews a Let's Encrypt TLS certificate.
+
+your-domain.com {
+reverse_proxy dashboard:8501
+}

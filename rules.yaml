@@ -1,0 +1,111 @@
+# Factor weights (must sum to 1.0)
+factor_weights:
+  quality: 0.35
+  value: 0.25
+  momentum: 0.25
+  profitability: 0.15
+
+# Momentum spec (proven: 12m back, skip last 30d — Jegadeesh-Titman 1993)
+momentum_lookback_days: 365
+momentum_skip_days: 30
+
+# Macro guard: no new buys if SPY < its 200-day SMA (Faber 2007)
+macro_guard:
+  enabled: true
+  benchmark: SPY
+  sma_days: 200
+
+# Tier 1 hard filters
+min_market_cap_B: 5 # USD billions
+max_pe_ratio: 40
+min_revenue_growth_pct: 5 # YoY %
+max_debt_to_equity: 150 # D/E %
+sectors_excluded:
+  - Leveraged ETFs
+  - Crypto
+
+# Portfolio construction
+max_positions: 5 # satellite only (excludes core ETFs)
+max_position_pct: 15 # % of total portfolio per satellite ticker
+min_position_eur: 300 # skip buy if notional < €300
+eur_usd_rate: 1.08 # update manually when rate drifts significantly
+min_hold_months: 6
+cash_floor_pct: 10 # never deploy below 10% cash
+
+# Risk
+stop_loss_pct: 15 # auto-sell if position down >= 15% from cost basis
+score_collapse_delta: 0.25 # trim 50% if score drops this much in one week
+
+# Execution
+broker: ibkr
+paper_mode: true # ALWAYS start true; set false only after 30+ days paper trading
+
+# LLM configuration
+#
+# GitHub Copilot models (requires GITHUB_TOKEN in .env — included with any Copilot subscription):
+# Available via models.inference.ai.azure.com: gpt-4o, gpt-4o-mini, Meta-Llama-3.1-405B-Instruct
+# Claude Sonnet 4.6 and other Copilot chat models are only accessible via the VS Code extension,
+# not the GitHub Models API — use gpt-4o as the best API-available model.
+#
+# Swap any model with zero code changes.
+
+# Weekly veto-only pass — fast, single turn
+llm_model: "github_copilot/gpt-4o"
+llm_max_tokens_weekly: 256
+
+# Monthly full agentic analysis — two turns, factor breakdown, algorithm feedback
+# Tries primary first, then each fallback in order.
+llm_model_monthly: "github_copilot/gpt-4o"
+llm_model_monthly_fallbacks:
+  - "github_copilot/Meta-Llama-3.1-405B-Instruct"
+  - "github_copilot/gpt-4o-mini"
+llm_max_tokens_monthly: 2500 # full two-turn agentic analysis
+
+# Core ETFs — always held, never scored, not counted toward max_positions
+core_etfs:
+  SPY: 0.25 # target allocation fraction
+  QQQ: 0.15
+
+# Watchlist — you curate quarterly, bot scores weekly
+# ~30 tickers across major sectors; Tier 1/2 hard filters + scoring narrow them each month
+watchlist:
+  # Technology (large-cap platform / software)
+  - MSFT
+  - AAPL
+  - GOOGL
+  - AMZN
+  - NVDA
+  - META
+  - ADBE
+  - CRM
+  - NOW
+  - ORCL
+  # Financials
+  - JPM
+  - BRK-B
+  - V
+  - MA
+  - BLK
+  # Healthcare
+  - LLY
+  - UNH
+  - ABBV
+  - TMO
+  # Industrials / Energy
+  - CAT
+  - HON
+  - NEE
+  - XOM
+  # Consumer
+  - COST
+  - NKE
+  - MCD
+  # International ETFs (scored like any other ticker)
+  - VGT
+  - VXUS
+  - EFA
+  - VWO
+
+# Notifications
+email_from: you@gmail.com
+email_to: you@gmail.com

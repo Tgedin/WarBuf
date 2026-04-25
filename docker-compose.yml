@@ -1,0 +1,68 @@
+# ── WarBuf + Streamlit dashboard on a single Hetzner CX11 ───────────────────
+#
+# Usage:
+#   1. Copy .env.template to .env and fill in all values.
+#   2. Point your domain's A record to the Hetzner server IP.
+#   3. docker compose up -d
+#
+# Dashboard is accessible at https://your-domain.com (Caddy handles TLS).
+# WarBuf and the dashboard share the warbuf_data volume (portfolio.db).
+# Caddy auto-issues a free Let's Encrypt certificate on first startup.
+
+services:
+  # ── Caddy reverse proxy (HTTPS + auto-TLS) ─────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - warbuf_net
+    depends_on:
+      - dashboard
+
+  # ── Streamlit dashboard ────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    command: streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    env_file: .env
+    environment:
+      PORTFOLIO_DB_PATH: /app/data/portfolio.db
+    volumes:
+      - warbuf_data:/app/data:ro
+    ports:
+      - "8501:8501"
+    networks:
+      - warbuf_net
+
+  # ── WarBuf ─────────────────────────────────────────────────────────────────
+  warbuf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    env_file: .env
+    volumes:
+      # Persist the SQLite database and the yfinance price cache across restarts.
+      - warbuf_data:/app/data
+      - warbuf_cache:/app/.cache
+    networks:
+      - warbuf_net
+
+volumes:
+  warbuf_data:
+  warbuf_cache:
+  caddy_data:
+  caddy_config:
+
+networks:
+  warbuf_net:
+    driver: bridge
