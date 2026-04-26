@@ -13,6 +13,12 @@ import litellm
 _COPILOT_PREFIX   = "github_copilot/"
 _COPILOT_API_BASE = "https://models.inference.ai.azure.com"
 
+# O-series reasoning models don't support temperature != 1.
+# Detect by model name suffix (o1, o3, o3-mini, o1-mini, etc.).
+def _is_o_series(model: str) -> bool:
+    name = model.split("/")[-1].lower()
+    return name.startswith("o1") or name.startswith("o3")
+
 
 def call_llm(prompt: str, model: str, max_tokens: int) -> str:
     """
@@ -20,8 +26,9 @@ def call_llm(prompt: str, model: str, max_tokens: int) -> str:
 
     GitHub Copilot models: prefix with "github_copilot/" (e.g. "github_copilot/gpt-4o").
     Raises RuntimeError on API failure with model and cause in the message.
-    Temperature is fixed at 0.1 for consistent, analytical output.
+    Temperature is fixed at 0.1; omitted for o-series models (they require temperature=1).
     """
+    temperature = 1 if _is_o_series(model) else 0.1
     try:
         if model.startswith(_COPILOT_PREFIX):
             real_model = "openai/" + model[len(_COPILOT_PREFIX):]
@@ -31,14 +38,14 @@ def call_llm(prompt: str, model: str, max_tokens: int) -> str:
                 api_key=os.environ.get("GITHUB_TOKEN", ""),
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
-                temperature=0.1,
+                temperature=temperature,
             )
         else:
             response = litellm.completion(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
-                temperature=0.1,
+                temperature=temperature,
             )
         return response.choices[0].message.content
     except Exception as exc:

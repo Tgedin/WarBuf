@@ -61,7 +61,7 @@ llm_model_monthly: "github_copilot/o3-mini"
 llm_model_monthly_fallbacks:
   - "github_copilot/gpt-4o"
   - "github_copilot/gpt-4o-mini"
-llm_max_tokens_monthly: 4000 # reasoning models need more tokens for internal chain-of-thought
+llm_max_tokens_monthly: 8000 # o3-mini: reasoning + 5 detailed JSON objects needs ~6-8k tokens
 
 # Core ETFs — always held, never scored, not counted toward max_positions
 core_etfs:

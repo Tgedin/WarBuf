@@ -90,6 +90,8 @@ _MONTHLY_CONCLUDE_PROMPT = """\
 Step 1 observations:
 {exploration}
 
+You MUST output exactly one JSON object for EACH of these tickers (no omissions): {ticker_list}
+
 Now write your full analysis as a JSON array ONLY — no prose before or after:
 [
   {{
@@ -254,7 +256,10 @@ def analyse_candidates(
         exploration = "Exploration step failed — proceeding with available data."
 
     # Turn 2 — conclude
-    conclude_prompt = _MONTHLY_CONCLUDE_PROMPT.format(exploration=exploration)
+    ticker_list = ", ".join(c.ticker for c in candidates)
+    conclude_prompt = _MONTHLY_CONCLUDE_PROMPT.format(
+        exploration=exploration, ticker_list=ticker_list
+    )
     try:
         raw     = _call(conclude_prompt, max_tokens)
         parsed  = _extract_json_array(raw)

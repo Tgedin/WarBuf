@@ -42,6 +42,19 @@ def test_call_llm_uses_fixed_temperature():
     assert mock_llm.call_args.kwargs["temperature"] == 0.1
 
 
+def test_o_series_model_uses_temperature_1():
+    """O-series reasoning models must use temperature=1 (they reject 0.1)."""
+    with patch("litellm.completion", return_value=_mock_response("x")) as mock_llm:
+        call_llm("prompt", "github_copilot/o3-mini", 512)
+    assert mock_llm.call_args.kwargs["temperature"] == 1
+
+
+def test_o1_model_uses_temperature_1():
+    with patch("litellm.completion", return_value=_mock_response("x")) as mock_llm:
+        call_llm("prompt", "openai/o1-mini", 512)
+    assert mock_llm.call_args.kwargs["temperature"] == 1
+
+
 def test_call_llm_raises_runtime_error_on_api_failure():
     with patch("litellm.completion", side_effect=Exception("API down")):
         with pytest.raises(RuntimeError, match="LLM call failed"):
