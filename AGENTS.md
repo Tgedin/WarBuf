@@ -270,9 +270,10 @@ The LLM produces one `AnalysisReport` per candidate. Fields:
 
 **Current model config**:
 
-- `llm_model: github_copilot/gpt-4o` — weekly veto pass
-- `llm_model_monthly: github_copilot/gpt-4o` — monthly full analysis (primary)
-- `llm_model_monthly_fallbacks: [Meta-Llama-3.1-405B-Instruct, gpt-4o-mini]` — tried in order if primary fails
+- `llm_model: github_copilot/gpt-4o` — weekly veto pass (fast, single turn)
+- `llm_model_monthly: github_copilot/o3-mini` — monthly full analysis (primary; thinking model — deliberate chain-of-thought, best for self_critique and algorithm_feedback)
+- `llm_model_monthly_fallbacks: [gpt-4o, gpt-4o-mini]` — tried in order if primary fails
+- `llm_max_tokens_monthly: 4000` — raised to accommodate o3-mini's internal reasoning tokens
 
 **Note on Claude models**: Claude Sonnet 4.6 is accessible in VS Code Copilot chat but NOT via the GitHub Models API (`models.inference.ai.azure.com`). Available API models: `gpt-4o`, `gpt-4o-mini`, `Meta-Llama-3.1-405B-Instruct`. Use `github_copilot/<model_id>` prefix.
 

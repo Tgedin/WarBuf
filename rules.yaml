@@ -54,12 +54,14 @@ llm_model: "github_copilot/gpt-4o"
 llm_max_tokens_weekly: 256
 
 # Monthly full agentic analysis — two turns, factor breakdown, algorithm feedback
-# Tries primary first, then each fallback in order.
-llm_model_monthly: "github_copilot/gpt-4o"
+# o3-mini is a reasoning/thinking model: it uses chain-of-thought internally before
+# producing its answer, which makes it significantly better at self_critique and
+# algorithm_feedback. Tries primary first, then each fallback in order.
+llm_model_monthly: "github_copilot/o3-mini"
 llm_model_monthly_fallbacks:
-  - "github_copilot/Meta-Llama-3.1-405B-Instruct"
+  - "github_copilot/gpt-4o"
   - "github_copilot/gpt-4o-mini"
-llm_max_tokens_monthly: 2500 # full two-turn agentic analysis
+llm_max_tokens_monthly: 4000 # reasoning models need more tokens for internal chain-of-thought
 
 # Core ETFs — always held, never scored, not counted toward max_positions
 core_etfs:
