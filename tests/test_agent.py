@@ -239,6 +239,33 @@ def test_monthly_with_prior_decisions_passes_through():
     assert len(reports) == 1 and reports[0].ticker == "AAPL"
 
 
+def test_monthly_with_rules_context_included_in_prompt():
+    """rules_context is formatted into the explore prompt without error."""
+    candidates = [_make_candidate("MSFT")]
+    rules = {
+        "factor_weights": {"quality": 0.35, "value": 0.25, "momentum": 0.25, "profitability": 0.15},
+        "min_market_cap_B": 5, "max_pe_ratio": 40, "min_revenue_growth_pct": 5,
+        "max_debt_to_equity": 150, "sectors_excluded": [],
+        "max_positions": 5, "max_position_pct": 15, "min_position_eur": 300,
+        "cash_floor_pct": 10, "stop_loss_pct": 15, "score_collapse_delta": 0.25,
+        "min_hold_months": 6, "macro_guard": {"sma_days": 200},
+    }
+    llm_json = json.dumps([_valid_report_json("MSFT")])
+    captured: list[str] = []
+
+    def capture_prompt(prompt, model, max_tokens):
+        captured.append(prompt)
+        return llm_json
+
+    with patch("core.agent.call_llm", side_effect=capture_prompt):
+        reports = analyse_candidates(
+            candidates, {}, model="any", max_tokens=512, rules_context=rules
+        )
+    assert reports[0].ticker == "MSFT"
+    assert "quality=0.35" in captured[0]
+    assert "max_PE=40" in captured[0]
+
+
 def test_fallback_models_used_on_primary_failure():
     """fallback_models param: second model is called when first fails."""
     candidates = [_make_candidate("AAPL")]

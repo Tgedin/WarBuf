@@ -43,13 +43,13 @@ WarBuf/
 │   ├── paper.py       ← paper trading; logs to SQLite, never touches real money
 │   └── ibkr.py        ← IBKR Web API via plain requests (no ib_insync — archived 2024)
 │
-├── tests/             ← 217 tests; all external I/O mocked
+├── tests/             ← 218 tests; all external I/O mocked
 │   ├── test_scorer.py           ← 19 tests
 │   ├── test_fees.py             ← 15 tests
 │   ├── test_screener.py         ← 17 tests  (passes_hard_filters)
 │   ├── test_screener_pipeline.py← 6 tests   (run_tier1_tier2 end-to-end)
 │   ├── test_paper_broker.py     ← 9 tests
-│   ├── test_agent.py            ← 41 tests (all LLM calls mocked; weekly + monthly + memory)
+│   ├── test_agent.py            ← 42 tests (all LLM calls mocked; weekly + monthly + memory + rules_context)
 │   ├── test_db.py               ← 38 tests
 │   ├── test_market.py           ← 16 tests (yfinance mocked)
 │   ├── test_llm_provider.py     ← 9 tests
@@ -242,6 +242,11 @@ Called from `monthly_job()` for screened candidates. Two-turn (~2500 tokens):
 **Historical memory injection**: `_build_memory_block()` formats the last 3 decision rows
 per ticker from the DB into the explore prompt, so the LLM can audit its own prior
 reasoning (bull/bear cases, self-critique, score trajectory).
+
+**Strategy rules injection**: `_build_rules_block()` formats the active `rules.yaml`
+parameters (factor weights, hard filters, allocation limits, risk thresholds) into the
+explore prompt. The LLM can critique whether the current weights suit the candidates
+and flag poorly calibrated parameters as part of its `algorithm_feedback`.
 
 The LLM produces one `AnalysisReport` per candidate. Fields:
 

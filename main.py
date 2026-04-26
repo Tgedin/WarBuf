@@ -267,6 +267,7 @@ def monthly_job() -> None:
         max_tokens=rules.get("llm_max_tokens_monthly", 2500),
         prior_decisions=prior_decisions,
         fallback_models=rules.get("llm_model_monthly_fallbacks", []),
+        rules_context=rules,
     )
     report_map = {r.ticker: r for r in reports}
     vetoed = {r.ticker for r in reports if r.vetoed}

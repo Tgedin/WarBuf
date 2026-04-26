@@ -62,6 +62,9 @@ The quantitative screening has already run two tiers:
 Your role is Tier 3: independent judgement, pattern recognition, and self-critique.
 You are also expected to give actionable feedback to improve the algorithm itself.
 
+ACTIVE STRATEGY RULES (the exact parameters governing this run):
+{rules_block}
+
 PRIOR ANALYSES (your own reasoning from past months — audit yourself):
 {memory_block}
 
@@ -77,6 +80,8 @@ Step 1 — Before writing your analysis, flag:
      event, quality inflated by a buyback, value trap where low P/E = structural decline)
   c) Any contradictions between the news and the quantitative score
   d) Any prior analyses where your own reasoning turned out to be wrong
+  e) Any strategy parameters above that seem poorly calibrated for current market conditions
+     (e.g. a PE cap that is too tight, a weight that over- or under-emphasises a factor)
 
 Reply with your Step 1 observations as plain text. Be specific and critical.
 """
@@ -199,6 +204,7 @@ def analyse_candidates(
     max_tokens: int = 2500,
     prior_decisions: dict[str, list[dict]] | None = None,
     fallback_models: list[str] | None = None,
+    rules_context: dict | None = None,
 ) -> list[AnalysisReport]:
     """
     Monthly full agentic analysis with two-turn reasoning and historical memory.
@@ -220,6 +226,7 @@ def analyse_candidates(
     )
     news_json    = json.dumps(news, indent=2)
     memory_block = _build_memory_block(prior_decisions or {}, candidates)
+    rules_block  = _build_rules_block(rules_context or {})
 
     all_models = [model] + (fallback_models or [])
 
@@ -235,6 +242,7 @@ def analyse_candidates(
 
     # Turn 1 — explore
     explore_prompt = _MONTHLY_EXPLORE_PROMPT.format(
+        rules_block=rules_block,
         memory_block=memory_block,
         candidates_json=candidates_json,
         news_json=news_json,
@@ -256,6 +264,37 @@ def analyse_candidates(
     except Exception as exc:
         print(f"[AGENT] Monthly LLM analysis failed — returning neutral reports: {exc}")
         return [_neutral_report(c.ticker) for c in candidates]
+
+
+def _build_rules_block(rules: dict) -> str:
+    """Format the active rules.yaml parameters as a readable string for the LLM prompt."""
+    if not rules:
+        return "Rules not provided."
+
+    weights = rules.get("factor_weights", {})
+    lines = [
+        "Factor weights:",
+        f"  quality={weights.get('quality', '?')}  value={weights.get('value', '?')}  "
+        f"momentum={weights.get('momentum', '?')}  profitability={weights.get('profitability', '?')}",
+        "Hard filters (Tier 1):",
+        f"  min_market_cap={rules.get('min_market_cap_B', '?')}B USD"
+        f"  max_PE={rules.get('max_pe_ratio', '?')}"
+        f"  min_revenue_growth={rules.get('min_revenue_growth_pct', '?')}%"
+        f"  max_D/E={rules.get('max_debt_to_equity', '?')}%",
+        f"  excluded_sectors={rules.get('sectors_excluded', [])}",
+        "Portfolio construction:",
+        f"  max_positions={rules.get('max_positions', '?')} satellite"
+        f"  max_position_pct={rules.get('max_position_pct', '?')}%"
+        f"  min_position_eur=€{rules.get('min_position_eur', '?')}"
+        f"  cash_floor={rules.get('cash_floor_pct', '?')}%",
+        "Risk:",
+        f"  stop_loss={rules.get('stop_loss_pct', '?')}%"
+        f"  score_collapse_delta={rules.get('score_collapse_delta', '?')}",
+        f"  min_hold_months={rules.get('min_hold_months', '?')}",
+        "Macro guard:",
+        f"  SPY must be above its {rules.get('macro_guard', {}).get('sma_days', '?')}-day SMA for new buys",
+    ]
+    return "\n".join(lines)
 
 
 # ── Memory injection ──────────────────────────────────────────────────────────
