@@ -1,13 +1,16 @@
 # Replace your-domain.com with your actual domain pointing to the Hetzner IP.
 
 # Caddy automatically issues and renews a Let's Encrypt TLS certificate.
+
 # Basic auth protects the dashboard — generate a password hash with:
-#   docker run --rm caddy:2-alpine caddy hash-password --plaintext 'yourpassword'
+
+# docker run --rm caddy:2-alpine caddy hash-password --plaintext 'yourpassword'
+
 # Then set DASHBOARD_USER and DASHBOARD_PASSWORD_HASH in .env
 
 your-domain.com {
-  basic_auth {
-    {env.DASHBOARD_USER} {env.DASHBOARD_PASSWORD_HASH}
-  }
-  reverse_proxy dashboard:8501
+	basic_auth {
+		{env.DASHBOARD_USER} {env.DASHBOARD_PASSWORD_HASH}
+	}
+	reverse_proxy dashboard:8501
 }
