@@ -29,7 +29,8 @@ _SCHEMA = [
         data_gaps         TEXT,   -- JSON array stored as text
         model_confidence  TEXT,
         confidence_reason TEXT,
-        self_critique     TEXT
+        self_critique     TEXT,
+        data_request      TEXT
     )
     """,
     """
@@ -100,6 +101,7 @@ class Database:
             "ALTER TABLE positions ADD COLUMN avg_cost_basis_eur REAL NOT NULL DEFAULT 0",
             "ALTER TABLE positions ADD COLUMN total_fees_eur     REAL NOT NULL DEFAULT 0",
             "ALTER TABLE decisions ADD COLUMN algorithm_feedback TEXT",
+            "ALTER TABLE decisions ADD COLUMN data_request TEXT",
         ]
         for stmt in migrations:
             try:
@@ -125,20 +127,21 @@ class Database:
         confidence_reason: str | None = None,
         self_critique: str | None = None,
         algorithm_feedback: str | None = None,
+        data_request: str | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO decisions
                (ticker, date, action, score, rules_hash,
                 vetoed, veto_reason, bull_case, bear_case,
                 data_gaps, model_confidence, confidence_reason, self_critique,
-                algorithm_feedback)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                algorithm_feedback, data_request)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 ticker, _today(), action, score, rules_hash,
                 int(vetoed), veto_reason, bull_case, bear_case,
                 json.dumps(data_gaps or []),
                 model_confidence, confidence_reason, self_critique,
-                algorithm_feedback,
+                algorithm_feedback, data_request,
             ),
         )
         self._conn.commit()
@@ -148,7 +151,7 @@ class Database:
         rows = self._conn.execute(
             """SELECT date, action, score, bull_case, bear_case,
                       self_critique, data_gaps, model_confidence,
-                      algorithm_feedback
+                      algorithm_feedback, data_request
                FROM decisions
                WHERE ticker = ?
                ORDER BY date DESC

@@ -93,7 +93,7 @@ def test_copilot_model_uses_github_token(monkeypatch):
 
 # ── call_llm_with_fallbacks ───────────────────────────────────────────────────
 
-from core.llm_provider import call_llm_with_fallbacks
+from core.llm_provider import call_llm_with_fallbacks  # noqa: E402
 
 
 def test_fallbacks_returns_first_success():

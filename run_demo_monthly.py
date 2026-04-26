@@ -12,7 +12,6 @@ Usage:
 from __future__ import annotations
 
 import os
-import sys
 
 import yaml
 from dotenv import load_dotenv
@@ -24,14 +23,14 @@ RULES_PATH = "rules.yaml"
 
 os.environ["PORTFOLIO_DB_PATH"] = DB_PATH
 
-from core.agent import analyse_candidates
-from core.fees import compute_fees
-from core.market import get_news_headlines, is_risk_on
-from core.scorer import FactorWeights
-from core.screener import HardFilters, run_tier1_tier2
-from broker.paper import PaperBroker
-from db import Database, rules_hash
-from reporter import send_monthly_forecast
+from core.agent import analyse_candidates  # noqa: E402
+from core.fees import compute_fees  # noqa: E402
+from core.market import get_news_headlines, is_risk_on  # noqa: E402
+from core.scorer import FactorWeights  # noqa: E402
+from core.screener import HardFilters, run_tier1_tier2  # noqa: E402
+from broker.paper import PaperBroker  # noqa: E402
+from db import Database, rules_hash  # noqa: E402
+from reporter import send_monthly_forecast  # noqa: E402
 
 
 def main() -> None:
@@ -117,6 +116,7 @@ def main() -> None:
             confidence_reason=report.confidence_reason if report else None,
             self_critique=report.self_critique if report else None,
             algorithm_feedback=report.algorithm_feedback if report else None,
+            data_request=report.data_request if report else None,
         )
 
         status = "VETOED" if candidate.ticker in vetoed else "BUY"

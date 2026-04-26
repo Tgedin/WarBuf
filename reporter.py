@@ -59,7 +59,8 @@ def send_weekly_digest(
     macro    = "RISK-ON ✓" if spy_price > spy_sma else "RISK-OFF ✗"
     alpha    = mtd_pct - spy_mtd_pct
     alert_summary = f"⚠ {len(alerts)} alert{'s' if len(alerts) != 1 else ''}: {alerts[0]}" if alerts else "No alerts"
-    report_link   = f"\n→ Full report: {dashboard_url}" if dashboard_url else ""
+    _weekly_url   = (dashboard_url.rstrip("/") + "?page=Weekly+Report") if dashboard_url else ""
+    report_link   = f"\n→ Full report: {_weekly_url}" if _weekly_url else ""
 
     body = (
         f"WarBuf · Week of {week}  |  EUR/USD {eur_usd_rate:.4f}\n"
@@ -103,7 +104,8 @@ def send_monthly_forecast(
     )
 
     if dashboard_url:
-        body += f"\n\n→ Full analysis: {dashboard_url}"
+        _forecasts_url = dashboard_url.rstrip("/") + "?page=Forecasts"
+        body += f"\n\n→ Full analysis: {_forecasts_url}"
 
     body += f"\n{_SEP_LONG}"
 

@@ -5,7 +5,6 @@ import pytest
 from core.scorer import (
     Fundamentals,
     FactorWeights,
-    ScoredTicker,
     _cross_rank,
     score_watchlist,
 )

@@ -106,6 +106,30 @@ The Streamlit dashboard (`dashboard.py`) is where all data is consumed.
 The weekly email is a 5-line ping that links to the dashboard URL.
 Set `DASHBOARD_URL` in `.env` so the email link works.
 
+Deep links work via `?page=` query param — the dashboard reads it on load and opens the correct tab directly.
+Email links use page-specific anchors:
+
+- Weekly email → `{DASHBOARD_URL}?page=Weekly+Report`
+- Monthly email → `{DASHBOARD_URL}?page=Forecasts`
+
+Valid page values: `Portfolio`, `Weekly+Report`, `Trades`, `Decisions`, `Performance`, `Forecasts`.
+
+**Dashboard tab summary:**
+
+| Tab               | Purpose                                                                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Portfolio**     | Per-position live P&L cards (current value, gross gain, net gain after fees); total live value vs cost basis. Prices fetched via yfinance, 1h cache.              |
+| **Weekly Report** | Delta-only view: score movements table (prev → curr score, Δ per ticker), active vetoes, last 20 trades. No duplication with other tabs.                          |
+| **Trades**        | Full trade log with paper/live tag.                                                                                                                               |
+| **Decisions**     | All LLM decisions as expandable cards. Header shows score trend (oldest→newest, last 5). `self_critique` styled as warning box; `algorithm_feedback` as info box. |
+| **Performance**   | Returns vs SPY chart + drawdown-from-peak chart. Header metrics: alpha vs SPY, max drawdown, WoW change.                                                          |
+| **Forecasts**     | Monthly forecast vs actual with hit rate and beat-SPY summary.                                                                                                    |
+
+**Sidebar** always shows:
+
+- Paper mode badge (if applicable)
+- Macro regime badge: 📈 RISK ON / 🔴 RISK OFF — SPY vs 200-day SMA, 1h cached via yfinance
+
 ---
 
 ## Strategy Reference
@@ -189,6 +213,10 @@ which decision.
 across months to find what the LLM consistently wishes it had — those are the gaps
 worth closing in the pipeline.
 
+**`data_request` column** in `decisions` is a TEXT field — one concrete, actionable
+data fetch the LLM wants for the next run (e.g. "fetch insider ownership pct"). Stored
+alongside `data_gaps` but more specific and machine-actionable.
+
 ---
 
 ## EUR-Native Accounting
@@ -242,6 +270,9 @@ Called from `monthly_job()` for screened candidates. Two-turn (~2500 tokens):
 **Historical memory injection**: `_build_memory_block()` formats the last 3 decision rows
 per ticker from the DB into the explore prompt, so the LLM can audit its own prior
 reasoning (bull/bear cases, self-critique, score trajectory).
+**`data_request` is included in the memory block** — each prior decision's `data_request`
+field is appended, so the LLM sees what it previously asked for and can follow up or
+acknowledge the gap is still open.
 
 **Strategy rules injection**: `_build_rules_block()` formats the active `rules.yaml`
 parameters (factor weights, hard filters, allocation limits, risk thresholds) into the
@@ -266,14 +297,27 @@ The LLM produces one `AnalysisReport` per candidate. Fields:
 **Token budgets** (in `rules.yaml`):
 
 - `llm_max_tokens_weekly: 256` — veto-only, one turn
-- `llm_max_tokens_monthly: 2500` — full two-turn agentic
+- `llm_max_tokens_monthly: 8000` — full two-turn agentic (thinking tokens + 5 JSON objects)
 
 **Current model config**:
 
-- `llm_model: github_copilot/gpt-4o` — weekly veto pass (fast, single turn)
-- `llm_model_monthly: github_copilot/o3-mini` — monthly full analysis (primary; thinking model — deliberate chain-of-thought, best for self_critique and algorithm_feedback)
-- `llm_model_monthly_fallbacks: [gpt-4o, gpt-4o-mini]` — tried in order if primary fails
-- `llm_max_tokens_monthly: 4000` — raised to accommodate o3-mini's internal reasoning tokens
+- `llm_model: github_copilot/gpt-4o` — weekly veto pass (fast, single turn, free via Copilot)
+- `llm_model_monthly: openrouter/qwen/qwen3-235b-a22b` — monthly full analysis (primary; hybrid thinking MoE, ~$0.02/month, GPQA 70%)
+- `llm_model_monthly_fallbacks: [openrouter/deepseek/deepseek-r1-0528, github_copilot/gpt-4o, github_copilot/gpt-4o-mini]` — tried in order if primary fails
+- `llm_max_tokens_monthly: 8000` — raised to accommodate thinking tokens + 5 JSON objects
+
+**OpenRouter setup** (required for monthly analysis):
+Set `OPENROUTER_API_KEY` in `.env`. Get key at `https://openrouter.ai/settings/keys` (pay-as-you-go, Revolut/Visa accepted).
+LiteLLM picks up `OPENROUTER_API_KEY` automatically for the `openrouter/` prefix. No code changes needed.
+
+**OpenRouter thinking model comparison** (as of April 2026):
+
+| Model                                   | Input /1M | Output /1M | GPQA | Notes                                |
+| --------------------------------------- | --------- | ---------- | ---- | ------------------------------------ |
+| `openrouter/qwen/qwen3-235b-a22b`       | $0.46     | $1.82      | 70%  | **Current primary** — best value     |
+| `openrouter/deepseek/deepseek-r1-0528`  | $0.70     | $2.50      | 71%  | Fallback #1 — best on math/logic     |
+| `openrouter/deepseek/deepseek-v4-pro`   | $0.44     | $0.87      | n/a  | Cheap reasoning, 1M context          |
+| `openrouter/deepseek/deepseek-v4-flash` | $0.14     | $0.28      | n/a  | Budget — configurable reasoning mode |
 
 **Note on Claude models**: Claude Sonnet 4.6 is accessible in VS Code Copilot chat but NOT via the GitHub Models API (`models.inference.ai.azure.com`). Available API models: `gpt-4o`, `gpt-4o-mini`, `Meta-Llama-3.1-405B-Instruct`. Use `github_copilot/<model_id>` prefix.
 
@@ -341,10 +385,23 @@ sqlite3 portfolio.db "SELECT data_gaps, COUNT(*) FROM decisions GROUP BY data_ga
 ### Environment setup
 
 ```bash
-cp .env.template .env   # fill in GROQ_API_KEY, EMAIL_*, IBKR_*
+cp .env.template .env   # fill in OPENROUTER_API_KEY, EMAIL_*, IBKR_*, GITHUB_TOKEN, DASHBOARD_*
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
+
+Required `.env` keys:
+
+| Key                       | Purpose                                                                             |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| `OPENROUTER_API_KEY`      | Monthly LLM analysis via OpenRouter (~$0.02/month)                                  |
+| `GITHUB_TOKEN`            | Weekly veto pass via GitHub Copilot (free, fine-grained PAT with Models: Read-only) |
+| `EMAIL_*`                 | SMTP credentials for weekly/monthly email reports                                   |
+| `DASHBOARD_URL`           | Full URL of the dashboard (e.g. `https://warbuf.duckdns.org`)                       |
+| `DASHBOARD_USER`          | Caddy basic_auth username                                                           |
+| `DASHBOARD_PASSWORD_HASH` | Caddy bcrypt hash — generate with `caddy hash-password --plaintext 'yourpass'`      |
+| `IBKR_*`                  | IBKR gateway credentials (only needed for live trading)                             |
+| `EUR_USD_RATE`            | Override exchange rate (optional; default from `rules.yaml`)                        |
 
 ---
 
@@ -451,14 +508,13 @@ Skip task tracking for single, trivial operations.
 
 ## What Is Not Yet Done
 
-| Item                       | Notes                                                                                                                                                           |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| IBKR gateway Docker image  | Use `ghcr.io/extrange/ibkr-cp-gateway` or official IBKR image; needs manual login first                                                                         |
-| Live trading               | Set `paper_mode: false` only after 30+ paper days and ~€3,000 capital                                                                                           |
-| Watchlist curation         | Review quarterly; currently 30 tickers in `rules.yaml`                                                                                                          |
-| Nightly backup destination | `nightly_backup_job` writes to `./backups/` by default; set `BACKUP_DIR` env var to point to an external volume or Backblaze B2 mount for off-server durability |
-| GitHub repo + secrets      | Push to GitHub, add `HETZNER_HOST` / `HETZNER_USER` / `HETZNER_SSH_KEY` in Actions Secrets for auto-deploy to work                                              |
-| Hetzner server provisioned | Spin up CX23, install Docker, clone repo, copy `.env`, point domain A record to server IP                                                                       |
+| Item                       | Notes                                                                                                                                                             |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| IBKR gateway Docker image  | Use `ghcr.io/extrange/ibkr-cp-gateway` or official IBKR image; needs manual login first                                                                           |
+| Live trading               | Set `paper_mode: false` only after 30+ paper days and ~€3,000 capital                                                                                             |
+| Watchlist curation         | Review quarterly; currently 30 tickers in `rules.yaml`                                                                                                            |
+| Nightly backup destination | `nightly_backup_job` writes to `./backups/` by default; set `BACKUP_DIR` env var to point to an external volume or Backblaze B2 mount for off-server durability   |
+| GitHub Actions CI/CD       | Repo is public. Add `HETZNER_HOST=178.104.225.167`, `HETZNER_USER=root`, `HETZNER_SSH_KEY` (private key PEM) to Actions Secrets for auto-deploy on push to `main` |
 
 ---
 
@@ -471,6 +527,44 @@ The Streamlit dashboard is always accessible at your domain over HTTPS.
 `docker-compose.yml` runs three services: `caddy`, `dashboard`, and `warbuf`.
 Caddy auto-issues a Let's Encrypt TLS certificate. No certbot, no nginx.
 
+### Current live instance
+
+| Property  | Value                                                                  |
+| --------- | ---------------------------------------------------------------------- |
+| Provider  | Hetzner CX23, Nuremberg                                                |
+| IP        | `178.104.225.167`                                                      |
+| Domain    | `warbuf.duckdns.org` (DuckDNS free subdomain)                          |
+| Dashboard | `https://warbuf.duckdns.org` (Caddy basic_auth protected)              |
+| Auth user | `warbuf` (password hash stored in `.env` as `DASHBOARD_PASSWORD_HASH`) |
+| SSH key   | `~/.ssh/id_ed25519` (ed25519, added to Hetzner at creation)            |
+
+### Caddy basic_auth setup
+
+The dashboard is protected by HTTP Basic Auth configured in `Caddyfile`.
+Credentials are passed via environment variables so the hash is never hardcoded.
+
+```bash
+# Generate bcrypt hash for a new password
+docker run --rm caddy:2-alpine caddy hash-password --plaintext 'yourpassword'
+
+# Add to .env:
+DASHBOARD_USER=warbuf
+DASHBOARD_PASSWORD_HASH=$2a$14$...
+```
+
+`docker-compose.yml` passes `.env` to the caddy service via `env_file: .env`.
+Restart caddy after changing the hash: `docker compose restart caddy`.
+
+### DuckDNS domain setup (free)
+
+If you need to recreate or change the domain:
+
+1. Go to `https://www.duckdns.org` and sign in
+2. Create subdomain → point to server IP
+3. Update `Caddyfile`: replace hostname with `yoursubdomain.duckdns.org`
+4. Update `.env`: `DASHBOARD_URL=https://yoursubdomain.duckdns.org`
+5. Restart stack: `docker compose up -d`
+
 ### One-time server setup (Hetzner CX23)
 
 ```bash
@@ -478,36 +572,51 @@ Caddy auto-issues a Let's Encrypt TLS certificate. No certbot, no nginx.
 curl -fsSL https://get.docker.com | sh
 
 # 2. Clone and configure
-git clone https://github.com/you/WarBuf.git && cd WarBuf
+git clone https://github.com/Tgedin/WarBuf.git && cd WarBuf
 cp .env.template .env
-nano .env          # fill in all values (see .env.template for each key)
+nano .env          # fill in OPENROUTER_API_KEY, GITHUB_TOKEN, EMAIL_*, DASHBOARD_*, IBKR_*
 
-# 3. Point your domain A record to the Hetzner IP, then edit Caddyfile
-nano Caddyfile     # replace your-domain.com with the real domain
+# 3. Update Caddyfile with real domain
+sed -i 's/your-domain.com/warbuf.duckdns.org/' Caddyfile
 
-# 4. Launch everything
+# 4. Update DASHBOARD_URL in .env
+sed -i 's|DASHBOARD_URL=.*|DASHBOARD_URL=https://warbuf.duckdns.org|' .env
+
+# 5. Launch everything
 docker compose up -d
 
-# 5. Access dashboard at https://your-domain.com
+# 6. Access dashboard at https://warbuf.duckdns.org
 ```
 
 ### Architecture diagram
 
 ```
-Internet → Caddy :443 (auto-TLS) → dashboard:8501  (internal network)
-                                  ← warbuf (scheduler, internal only)
-                                     both share warbuf_data volume (portfolio.db)
+Internet → Caddy :443 (auto-TLS, basic_auth) → dashboard:8501  (internal network)
+                                              ← warbuf (scheduler, internal only)
+                                                 both share warbuf_data volume (portfolio.db)
 ```
 
 ### Local development run (no domain needed)
 
 ```bash
 # Run dashboard standalone (reads local portfolio.db)
-streamlit run dashboard.py
+PORTFOLIO_DB_PATH=demo.db streamlit run dashboard.py --server.headless true
 # Access at http://localhost:8501
+# Deep link to a tab: http://localhost:8501?page=Decisions
 
 # Or run the full stack locally
 docker compose up -d dashboard warbuf
+```
+
+### Deploying changes to the server
+
+```bash
+# Push code then SSH to rebuild
+ssh root@178.104.225.167 'cd /root/WarBuf && git pull && docker compose up -d --build'
+
+# Push updated .env only (no rebuild needed)
+scp .env root@178.104.225.167:/root/WarBuf/.env
+ssh root@178.104.225.167 'docker compose -f /root/WarBuf/docker-compose.yml restart warbuf'
 ```
 
 ---

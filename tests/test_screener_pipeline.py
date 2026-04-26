@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 
 from core.scorer import Fundamentals, FactorWeights
 from core.screener import HardFilters, run_tier1_tier2

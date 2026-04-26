@@ -57,11 +57,12 @@ llm_max_tokens_weekly: 256
 # o3-mini is a reasoning/thinking model: it uses chain-of-thought internally before
 # producing its answer, which makes it significantly better at self_critique and
 # algorithm_feedback. Tries primary first, then each fallback in order.
-llm_model_monthly: "github_copilot/o3-mini"
+llm_model_monthly: "openrouter/qwen/qwen3-235b-a22b"
 llm_model_monthly_fallbacks:
-  - "github_copilot/gpt-4o"
-  - "github_copilot/gpt-4o-mini"
-llm_max_tokens_monthly: 8000 # o3-mini: reasoning + 5 detailed JSON objects needs ~6-8k tokens
+  - "openrouter/deepseek/deepseek-r1-0528" # updated R1, best math/logic benchmarks
+  - "github_copilot/gpt-4o" # free copilot fallback
+  - "github_copilot/gpt-4o-mini" # last resort
+llm_max_tokens_monthly: 8000 # Qwen3 235B thinking: internal CoT + 5 JSON objects needs ~6-8k tokens
 
 # Core ETFs — always held, never scored, not counted toward max_positions
 core_etfs:

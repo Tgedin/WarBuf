@@ -1,5 +1,4 @@
 """Tests for core/screener.py — Tier 1 hard filters (pure logic, no I/O)."""
-import pytest
 
 from core.scorer import Fundamentals
 from core.screener import HardFilters, passes_hard_filters

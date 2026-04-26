@@ -23,7 +23,6 @@ from __future__ import annotations
 import gzip
 import os
 import shutil
-import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -222,7 +221,7 @@ def weekly_job() -> None:
     )
 
     db.close()
-    print(f"[WEEKLY] Done.")
+    print("[WEEKLY] Done.")
 
 
 # ── Monthly job ───────────────────────────────────────────────────────────────
@@ -292,6 +291,7 @@ def monthly_job() -> None:
             confidence_reason=report.confidence_reason if report else None,
             self_critique=report.self_critique if report else None,
             algorithm_feedback=report.algorithm_feedback if report else None,
+            data_request=report.data_request if report else None,
         )
 
         if candidate.ticker in vetoed:

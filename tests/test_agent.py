@@ -296,7 +296,7 @@ def test_surrounding_prose_stripped_from_llm_response():
 
 
 def test_empty_candidates_returns_empty_list():
-    with patch("core.agent.call_llm") as mock_llm:
+    with patch("core.agent.call_llm"):
         reports = analyse_candidates([], {}, model="any", max_tokens=512)
     assert reports == []
 

@@ -5,8 +5,6 @@ Uses in-memory SQLite (:memory:) so tests are fast and leave no files.
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 

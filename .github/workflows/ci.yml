@@ -54,6 +54,6 @@ jobs:
           username: ${{ secrets.HETZNER_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
           script: |
-            cd /home/warbuf/WarBuf
+            cd /root/WarBuf
             git pull origin main
             docker compose up -d --build

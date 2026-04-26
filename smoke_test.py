@@ -367,8 +367,8 @@ check("veto_reason present iff vetoed", _check_veto_reason_only_when_vetoed, "ll
 
 section("6 · PAPER BROKER — place buy + sell, verify DB records")
 
-from db import Database
-from broker.paper import PaperBroker
+from db import Database  # noqa: E402
+from broker.paper import PaperBroker  # noqa: E402
 
 # Use a fixed mock price so the section never depends on yfinance availability.
 _MOCK_PRICE = 182.50
@@ -472,7 +472,6 @@ def _check_record_decision():
     db = state["paper_db"]
     reports = state.get("agent_reports", [])
     candidates = state.get("screener_top", [])
-    rules = state["rules"]
 
     if not candidates:
         raise RuntimeError("No candidates to record decisions for")
@@ -556,7 +555,6 @@ check("rules_hash returns valid 16-char hex", _check_rules_hash_format)
 
 section("8 · REPORTER — email body (SMTP mocked) + real email send")
 
-import os
 os.environ.setdefault("EMAIL_FROM",     "smoke@test.local")
 os.environ.setdefault("EMAIL_TO",       "smoke@test.local")
 os.environ.setdefault("EMAIL_PASSWORD", "smoke-test-password")
@@ -697,7 +695,7 @@ check("real weekly digest email sent via Gmail", _check_real_email_send)
 # ══════════════════════════════════════════════════════════════════════════════
 
 print(f"\n{'═' * 60}")
-print(f"  SMOKE TEST RESULTS")
+print("  SMOKE TEST RESULTS")
 print(f"{'═' * 60}")
 
 passed  = sum(1 for _, ok, _ in _RESULTS if ok is True)
@@ -712,7 +710,7 @@ if failed:
             print(f"    ✗  {name}")
             print(f"       {err[:120]}")
 else:
-    print(f"\n  \033[32mAll checks passed.\033[0m")
+    print("\n  \033[32mAll checks passed.\033[0m")
 
 print(f"\n  Passed: {passed}   Failed: {failed}   Skipped: {skipped}   Total: {total}")
 print()

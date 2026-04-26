@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from core.llm_provider import call_llm, call_llm_with_fallbacks
+from core.llm_provider import call_llm
 from core.scorer import ScoredTicker
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -320,12 +320,15 @@ def _build_memory_block(
             continue
         lines.append(f"{candidate.ticker}:")
         for d in history:
+            data_req = d.get("data_request") or ""
+            req_str  = f" | requested={data_req[:60]}" if data_req else ""
             lines.append(
                 f"  {d.get('date', '?')}: "
                 f"action={d.get('action', '?')} score={d.get('score', '?'):.2f} "
                 f"bull={d.get('bull_case', '')[:80]} | "
                 f"bear={d.get('bear_case', '')[:80]} | "
                 f"critique={d.get('self_critique', '')[:80]}"
+                f"{req_str}"
             )
     return "\n".join(lines)
 

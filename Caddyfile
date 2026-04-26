@@ -9,8 +9,8 @@
 # Then set DASHBOARD_USER and DASHBOARD_PASSWORD_HASH in .env
 
 your-domain.com {
-	basic_auth {
-		{env.DASHBOARD_USER} {env.DASHBOARD_PASSWORD_HASH}
-	}
-	reverse_proxy dashboard:8501
+basic_auth {
+{env.DASHBOARD_USER} {env.DASHBOARD_PASSWORD_HASH}
+}
+reverse_proxy dashboard:8501
 }

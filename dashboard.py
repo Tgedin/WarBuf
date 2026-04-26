@@ -19,6 +19,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 import yaml
+import yfinance as yf
 
 DB_PATH    = Path(os.getenv("PORTFOLIO_DB_PATH", "portfolio.db"))
 RULES_PATH = Path(os.getenv("RULES_PATH", "rules.yaml"))
@@ -28,6 +29,15 @@ st.set_page_config(
     page_icon="📈",
     layout="wide",
 )
+
+_PAGES = ["Portfolio", "Weekly Report", "Trades", "Decisions", "Performance", "Forecasts"]
+
+def _page_index() -> int:
+    requested = st.query_params.get("page", "Portfolio")
+    try:
+        return _PAGES.index(requested)
+    except ValueError:
+        return 0
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
@@ -57,13 +67,51 @@ def _is_paper_mode() -> bool:
     return df["ibkr_order_id"].str.startswith("PAPER-").all()
 
 
+def _get_eur_usd_rate() -> float:
+    if RULES_PATH.exists():
+        try:
+            rules = yaml.safe_load(RULES_PATH.read_text())
+            return float(rules.get("eur_usd_rate", 1.08))
+        except Exception:
+            pass
+    return 1.08
+
+
+@st.cache_data(ttl=3600)
+def _get_current_prices_eur(tickers: tuple[str, ...], eur_usd_rate: float) -> dict[str, float | None]:
+    """Fetch current USD prices for held tickers and convert to EUR. 1h cache."""
+    result: dict[str, float | None] = {}
+    for ticker in tickers:
+        try:
+            price_usd = yf.Ticker(ticker).fast_info.last_price
+            result[ticker] = float(price_usd) / eur_usd_rate if price_usd else None
+        except Exception:
+            result[ticker] = None
+    return result
+
+
+@st.cache_data(ttl=3600)
+def _get_macro_regime() -> tuple[str, float, float]:
+    """Returns (status, spy_current, spy_sma200). 1h cache."""
+    try:
+        hist = yf.Ticker("SPY").history(period="210d")
+        if len(hist) < 200:
+            return ("UNKNOWN", 0.0, 0.0)
+        current = float(hist["Close"].iloc[-1])
+        sma     = float(hist["Close"].tail(200).mean())
+        return ("RISK ON" if current >= sma else "RISK OFF", current, sma)
+    except Exception:
+        return ("UNKNOWN", 0.0, 0.0)
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 st.sidebar.title("WarBuf")
 st.sidebar.caption("Long-term investment bot")
 page = st.sidebar.radio(
     "View",
-    ["Portfolio", "Weekly Report", "Trades", "Decisions", "Performance", "Forecasts"],
+    _PAGES,
+    index=_page_index(),
 )
 
 # ── Paper mode banner (shown on every page) ───────────────────────────────────
@@ -72,6 +120,14 @@ if _is_paper_mode():
     st.sidebar.divider()
     st.sidebar.warning("🧪 **PAPER MODE**\n\nAll data is simulated. No real orders have been placed.", icon=None)
 
+st.sidebar.divider()
+_regime, _spy_cur, _spy_sma = _get_macro_regime()
+if _regime == "RISK ON":
+    st.sidebar.success(f"📈 **{_regime}**\n\nSPY ${_spy_cur:.0f} > SMA ${_spy_sma:.0f}")
+elif _regime == "RISK OFF":
+    st.sidebar.error(f"🔴 **{_regime}**\n\nSPY ${_spy_cur:.0f} < SMA ${_spy_sma:.0f}")
+else:
+    st.sidebar.caption("Macro: data unavailable")
 
 
 if page == "Portfolio":
@@ -89,17 +145,58 @@ if page == "Portfolio":
     if df.empty:
         st.info("No positions yet.")
     else:
-        st.dataframe(df, width="stretch", hide_index=True)
-        st.metric("Total cost basis (€)", f"€{df['total_cost_eur'].sum():,.2f}")
+        eur_usd = _get_eur_usd_rate()
+        prices  = _get_current_prices_eur(tuple(df["ticker"].tolist()), eur_usd)
+
+        total_cost  = df["total_cost_eur"].sum()
+        total_value = 0.0
+
+        for _, row in df.iterrows():
+            ticker    = row["ticker"]
+            qty       = row["qty"]
+            cost      = row["total_cost_eur"]
+            fees      = row["fees_eur"]
+            price_eur = prices.get(ticker)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Ticker", ticker)
+            c2.metric("Qty", f"{qty:.4f}")
+            c3.metric("Cost basis", f"€{cost:,.2f}")
+            if price_eur is not None:
+                cur_val  = qty * price_eur
+                gross    = cur_val - cost
+                gain_pct = gross / cost * 100 if cost else 0.0
+                net_gain = gross - fees
+                total_value += cur_val
+                c4.metric(
+                    "Current value",
+                    f"€{cur_val:,.2f}",
+                    delta=f"€{gross:+,.2f} ({gain_pct:+.1f}%)  net €{net_gain:+,.2f}",
+                )
+            else:
+                c4.metric("Current value", "—")
+            st.divider()
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total cost basis", f"€{total_cost:,.2f}")
+        if total_value > 0:
+            total_gain     = total_value - total_cost
+            total_gain_pct = total_gain / total_cost * 100 if total_cost else 0.0
+            c2.metric(
+                "Total live value",
+                f"€{total_value:,.2f}",
+                delta=f"€{total_gain:+,.2f} ({total_gain_pct:+.1f}%)",
+            )
+        else:
+            c2.metric("Total live value", "—")
+        c3.metric("EUR/USD rate", f"{eur_usd:.4f}")
 
 # ── Weekly Report ─────────────────────────────────────────────────────────────
 
 elif page == "Weekly Report":
-    import json as _json
+    st.title("Weekly Report — What Changed")
 
-    st.title("Weekly Report")
-
-    # ── Macro & portfolio header ──────────────────────────────────────────────
+    # ── Portfolio WoW header ──────────────────────────────────────────────────
     perf = _query("""
         SELECT date, portfolio_value_eur, benchmark_value, cash_eur
         FROM performance
@@ -110,95 +207,98 @@ elif page == "Weekly Report":
         latest = perf.iloc[0]
         col1, col2, col3 = st.columns(3)
         col1.metric("Portfolio (€)", f"€{latest['portfolio_value_eur']:,.0f}")
-        col2.metric("SPY value", f"{latest['benchmark_value']:.4f}")
+        col2.metric("SPY", f"${latest['benchmark_value']:.2f}")
         col3.metric("Cash (€)", f"€{latest['cash_eur']:,.0f}")
         if len(perf) == 2:
             prev = perf.iloc[1]
-            port_chg = (latest["portfolio_value_eur"] - prev["portfolio_value_eur"]) / prev["portfolio_value_eur"] * 100
-            spy_chg  = (latest["benchmark_value"]     - prev["benchmark_value"])     / prev["benchmark_value"]     * 100
-            col1.caption(f"WoW {'+' if port_chg >= 0 else ''}{port_chg:.1f}%")
-            col2.caption(f"WoW {'+' if spy_chg  >= 0 else ''}{spy_chg:.1f}%")
+            if prev["portfolio_value_eur"]:
+                port_chg = (latest["portfolio_value_eur"] - prev["portfolio_value_eur"]) / prev["portfolio_value_eur"] * 100
+                spy_chg  = (latest["benchmark_value"]     - prev["benchmark_value"])     / prev["benchmark_value"]     * 100
+                col1.caption(f"WoW {'+' if port_chg >= 0 else ''}{port_chg:.1f}%")
+                col2.caption(f"WoW {'+' if spy_chg  >= 0 else ''}{spy_chg:.1f}%")
 
     st.divider()
 
-    # ── Positions ─────────────────────────────────────────────────────────────
-    st.subheader("Positions")
-    pos_df = _query("""
-        SELECT
-            ticker,
-            qty,
-            ROUND(avg_cost_basis_eur, 2) AS avg_cost_eur,
-            ROUND(qty * avg_cost_basis_eur, 2) AS total_cost_eur,
-            ROUND(total_fees_eur, 2) AS fees_eur
-        FROM positions
-        ORDER BY total_cost_eur DESC
+    # ── Score movements since last analysis ───────────────────────────────────
+    st.subheader("Score movements")
+    all_dec = _query("""
+        SELECT ticker, date, ROUND(score, 3) AS score, action, model_confidence, vetoed
+        FROM decisions
+        ORDER BY date DESC
+        LIMIT 200
     """)
-    if pos_df.empty:
-        st.info("No positions yet.")
-    else:
-        st.dataframe(pos_df, width="stretch", hide_index=True)
-
-    st.divider()
-
-    # ── Latest LLM decisions (most recent per ticker) ─────────────────────────
-    st.subheader("Latest Analysis")
-    decisions_df = _query("""
-        SELECT d.date, d.ticker, d.action, ROUND(d.score, 3) AS score,
-               d.model_confidence, d.vetoed, d.veto_reason,
-               d.bull_case, d.bear_case, d.self_critique, d.data_gaps
-        FROM decisions d
-        INNER JOIN (
-            SELECT ticker, MAX(date) AS max_date
-            FROM decisions
-            GROUP BY ticker
-        ) latest ON d.ticker = latest.ticker AND d.date = latest.max_date
-        ORDER BY d.score DESC
-    """)
-    if decisions_df.empty:
+    if all_dec.empty:
         st.info("No decisions recorded yet.")
     else:
-        for _, row in decisions_df.iterrows():
-            vetoed = bool(row.get("vetoed", 0))
-            conf   = row.get("model_confidence") or "—"
-            score  = row.get("score")
-
-            header_color = "🔴" if vetoed else ("🟢" if score and score >= 0.6 else "🟡")
-            with st.expander(
-                f"{header_color} **{row['ticker']}** · score {score:.3f} · {row['action']} · {conf} confidence · {row['date']}",
-                expanded=False,
-            ):
-                if vetoed:
-                    st.error(f"**VETOED** — {row.get('veto_reason') or 'no reason recorded'}")
-
-                c1, c2 = st.columns(2)
-                c1.markdown(f"**Bull case**\n\n{row.get('bull_case') or '—'}")
-                c2.markdown(f"**Bear case**\n\n{row.get('bear_case') or '—'}")
-                st.markdown(f"**Self-critique**\n\n{row.get('self_critique') or '—'}")
-
-                raw_gaps = row.get("data_gaps")
-                if raw_gaps and raw_gaps != "[]":
-                    try:
-                        gaps = _json.loads(raw_gaps)
-                        if gaps:
-                            st.caption("Data gaps: " + " · ".join(gaps))
-                    except Exception:
-                        pass
+        last2   = all_dec.groupby("ticker").head(2).reset_index(drop=True)
+        has_two = last2.groupby("ticker").filter(lambda g: len(g) == 2)["ticker"].unique()
+        rows = []
+        for ticker in has_two:
+            pair = last2[last2["ticker"] == ticker].sort_values("date", ascending=False)
+            curr, prev = pair.iloc[0], pair.iloc[1]
+            delta = round(float(curr["score"]) - float(prev["score"]), 3)
+            rows.append({
+                "ticker":     ticker,
+                "prev_score": prev["score"],
+                "curr_score": curr["score"],
+                "Δ score":    f"{delta:+.3f}",
+                "confidence": curr["model_confidence"],
+                "vetoed":     bool(curr["vetoed"]),
+                "date":       curr["date"],
+            })
+        if rows:
+            st.dataframe(
+                pd.DataFrame(rows).sort_values("Δ score", ascending=False),
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.info("Need at least 2 analyses per ticker to show score movements.")
 
     st.divider()
 
-    # ── Alerts: recent vetoes + any score collapses ───────────────────────────
-    st.subheader("Alerts")
-    alerts_df = _query("""
-        SELECT date, ticker, veto_reason, score
-        FROM decisions
-        WHERE vetoed = 1
-        ORDER BY date DESC
-        LIMIT 10
+    # ── Active vetoes ─────────────────────────────────────────────────────────
+    st.subheader("Active vetoes")
+    vetoes_df = _query("""
+        SELECT d.ticker, d.date, d.veto_reason, ROUND(d.score, 3) AS score
+        FROM decisions d
+        INNER JOIN (
+            SELECT ticker, MAX(date) AS max_date FROM decisions GROUP BY ticker
+        ) latest ON d.ticker = latest.ticker AND d.date = latest.max_date
+        WHERE d.vetoed = 1
+        ORDER BY d.date DESC
     """)
-    if alerts_df.empty:
+    if vetoes_df.empty:
         st.success("No active vetoes.")
     else:
-        st.dataframe(alerts_df, width="stretch", hide_index=True)
+        for _, row in vetoes_df.iterrows():
+            st.error(f"🚫 **{row['ticker']}** ({row['date']}) — {row['veto_reason']}")
+
+    st.divider()
+
+    # ── Recent trades ─────────────────────────────────────────────────────────
+    st.subheader("Recent trades")
+    trades_df = _query("""
+        SELECT date, ticker, side,
+               ROUND(qty, 4) AS qty,
+               ROUND(price_eur, 2) AS price_eur,
+               ROUND(fees_usd, 4) AS fees_usd,
+               ibkr_order_id
+        FROM trades
+        ORDER BY date DESC
+        LIMIT 20
+    """)
+    if trades_df.empty:
+        st.info("No trades yet.")
+    else:
+        trades_df["mode"] = trades_df["ibkr_order_id"].apply(
+            lambda oid: "🧪 paper" if str(oid).startswith("PAPER-") else "🟢 live"
+        )
+        st.dataframe(
+            trades_df.drop(columns=["ibkr_order_id"]),
+            width="stretch",
+            hide_index=True,
+        )
 
 # ── Trades ────────────────────────────────────────────────────────────────────
 
@@ -262,20 +362,30 @@ elif page == "Decisions":
         ticker_filter = st.selectbox(
             "Filter by ticker", ["All"] + sorted(df["ticker"].unique().tolist())
         )
+
+        # Build score history from full dataset before filter for trend display
+        score_history: dict[str, list[float]] = (
+            df.groupby("ticker")["score"]
+            .apply(list)
+            .to_dict()
+        )
+
         if ticker_filter != "All":
             df = df[df["ticker"] == ticker_filter]
 
-        # Summary table — compact columns only
-        summary_cols = ["date", "ticker", "action", "score", "model_confidence", "vetoed"]
-        st.dataframe(df[summary_cols], width="stretch", hide_index=True)
-
-        st.subheader("Decision detail")
         for _, row in df.iterrows():
+            ticker      = row["ticker"]
             veto_marker = "🚫 " if row["vetoed"] else ""
             conf_emoji  = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(
                 str(row["model_confidence"]).lower(), "⚪"
             )
-            label = f"{veto_marker}{row['ticker']}  {row['date']}  {conf_emoji} {row['model_confidence']}  score {row['score']}"
+            history   = score_history.get(ticker, [])
+            trend_str = " → ".join(f"{s:.3f}" for s in reversed(history[:5]))
+            label = (
+                f"{veto_marker}{ticker}  {row['date']}  "
+                f"{conf_emoji} {row['model_confidence']}  "
+                f"score {row['score']}  |  trend: {trend_str}"
+            )
             with st.expander(label):
                 if row["vetoed"] and pd.notna(row["veto_reason"]) and row["veto_reason"]:
                     st.error(f"**Veto:** {row['veto_reason']}")
@@ -285,11 +395,11 @@ elif page == "Decisions":
                 if pd.notna(row["bear_case"]) and row["bear_case"]:
                     c2.markdown(f"**Bear case**\n\n{row['bear_case']}")
                 if pd.notna(row["self_critique"]) and row["self_critique"]:
-                    st.caption(f"Self-critique: {row['self_critique']}")
+                    st.warning(f"**Self-critique:** {row['self_critique']}")
                 if pd.notna(row["algorithm_feedback"]) and row["algorithm_feedback"]:
                     st.info(f"**Algorithm feedback:** {row['algorithm_feedback']}")
                 if pd.notna(row["data_request"]) and row["data_request"]:
-                    st.caption(f"Data request: {row['data_request']}")
+                    st.caption(f"📋 Data request: {row['data_request']}")
                 if pd.notna(row["data_gaps"]) and row["data_gaps"] not in ("", "[]"):
                     st.caption(f"Data gaps: {row['data_gaps']}")
 
@@ -340,7 +450,36 @@ elif page == "Performance":
         first_s = df["spy_value"].iloc[0]
         df["portfolio_pct"] = ((df["portfolio_eur"] - first_p) / first_p * 100).round(2)
         df["spy_pct"]       = ((df["spy_value"]     - first_s) / first_s * 100).round(2)
+
+        # Drawdown from rolling peak
+        running_max        = df["portfolio_eur"].cummax()
+        df["drawdown_pct"] = ((df["portfolio_eur"] - running_max) / running_max * 100).round(2)
+        max_drawdown       = df["drawdown_pct"].min()
+
+        # Header metrics
+        latest = df.iloc[-1]
+        prev   = df.iloc[-2] if len(df) >= 2 else None
+        alpha  = df["portfolio_pct"].iloc[-1] - df["spy_pct"].iloc[-1]
+        c1, c2, c3 = st.columns(3)
+        c1.metric(
+            "Portfolio vs start",
+            f"{df['portfolio_pct'].iloc[-1]:+.1f}%",
+            delta=f"alpha {alpha:+.1f}% vs SPY",
+        )
+        c2.metric(
+            "Max drawdown",
+            f"{max_drawdown:.1f}%",
+            delta=f"current {df['drawdown_pct'].iloc[-1]:.1f}%",
+            delta_color="inverse",
+        )
+        if prev is not None and prev["portfolio_eur"]:
+            wow = (latest["portfolio_eur"] - prev["portfolio_eur"]) / prev["portfolio_eur"] * 100
+            c3.metric("WoW change", f"{wow:+.1f}%")
+
+        st.subheader("Returns vs SPY")
         st.line_chart(df.set_index("date")[["portfolio_pct", "spy_pct"]])
+        st.subheader("Drawdown from peak")
+        st.line_chart(df.set_index("date")[["drawdown_pct"]])
         st.dataframe(df.sort_values("date", ascending=False), width="stretch", hide_index=True)
 
 # ── Forecasts ────────────────────────────────────────────────────────────────
