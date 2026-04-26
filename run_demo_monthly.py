@@ -166,7 +166,7 @@ def main() -> None:
             ],
             planned_action=f"Buy {len(bought)} satellite positions via paper broker.",
             db=db,
-            reports=reports,
+            dashboard_url=os.getenv("DASHBOARD_URL", "http://localhost:8501"),
         )
         print("\n      Forecast saved to DB.")
     except Exception as exc:

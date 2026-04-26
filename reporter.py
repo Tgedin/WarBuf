@@ -11,12 +11,8 @@ import os
 import smtplib
 from datetime import date, datetime
 from email.message import EmailMessage
-from typing import TYPE_CHECKING
 
 from db import Database
-
-if TYPE_CHECKING:
-    from core.agent import AnalysisReport
 
 _SEP_LONG  = "─" * 37
 
@@ -86,7 +82,7 @@ def send_monthly_forecast(
     position_outlooks: list[dict],  # [{"ticker", "outlook", "note"}]
     planned_action: str,
     db: Database,
-    reports: list[AnalysisReport] | None = None,  # LLM analysis per candidate
+    dashboard_url: str = "",
 ) -> None:
     outlook_lines = "\n".join(
         f"  {p['ticker']:<8} {p['outlook']:<12} {p['note']}"
@@ -106,8 +102,8 @@ def send_monthly_forecast(
         f"ACTIONS PLANNED  {planned_action}"
     )
 
-    if reports:
-        body += "\n\n" + _format_analysis_block(reports)
+    if dashboard_url:
+        body += f"\n\n→ Full analysis: {dashboard_url}"
 
     body += f"\n{_SEP_LONG}"
 
@@ -116,37 +112,6 @@ def send_monthly_forecast(
     month_key = datetime.strptime(month_label, "%B %Y").strftime("%Y-%m")
     db.save_forecast(month_key, expected_low, expected_high)
 
-
-def _format_analysis_block(reports: list[AnalysisReport]) -> str:
-    """Format the LLM analysis section for the monthly email."""
-    sep = "·" * 33
-    sections: list[str] = ["LLM ANALYSIS (Tier 3)", sep]
-
-    for r in reports:
-        veto_line = (
-            f"  VETO ⚠  {r.veto_reason}"
-            if r.vetoed
-            else f"  HOLD/BUY  confidence={r.model_confidence}"
-        )
-        sections += [
-            f"\n{r.ticker}  [{r.model_confidence.upper()}]",
-            veto_line,
-            f"  Bull  {r.bull_case}",
-            f"  Bear  {r.bear_case}",
-            f"  Critique  {r.self_critique}",
-        ]
-        if r.data_gaps:
-            sections.append(f"  Data gaps  {'; '.join(r.data_gaps)}")
-        if r.data_request:
-            sections.append(f"  Data request  {r.data_request}")
-
-    # Aggregate data requests — pipeline improvement signal
-    requests = [r.data_request for r in reports if r.data_request]
-    if requests:
-        sections += [f"\n{sep}", "DATA REQUESTS (for next month's pipeline)"]
-        sections += [f"  [{r.ticker}] {r.data_request}" for r in reports if r.data_request]
-
-    return "\n".join(sections)
 
 
 def send_forecast_vs_actual(

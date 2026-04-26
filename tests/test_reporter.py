@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.agent import AnalysisReport
 from db import Database
 from reporter import send_forecast_vs_actual, send_monthly_forecast, send_weekly_digest
 
@@ -210,25 +209,9 @@ def test_weekly_digest_body_contains_dashboard_url(db, monkeypatch):
     assert any("https://example.com" in b for b in sent_bodies)
 
 
-# ── send_monthly_forecast with LLM reports ────────────────────────────────────
+# ── send_monthly_forecast with dashboard_url ──────────────────────────────────
 
-def _make_report(ticker: str, vetoed: bool = False) -> AnalysisReport:
-    return AnalysisReport(
-        ticker=ticker,
-        vetoed=vetoed,
-        veto_reason="fraud confirmed" if vetoed else None,
-        bull_case="Strong FCF, durable moat.",
-        bear_case="Regulatory risk in EU.",
-        data_gaps=["earnings call transcript"],
-        data_request="FCF for last 3 years",
-        model_confidence="high",
-        confidence_reason="Fundamentals consistent.",
-        self_critique="May be anchored on prior growth.",
-        algorithm_feedback="Momentum rank may be inflated by a one-off event.",
-    )
-
-
-def test_monthly_forecast_with_reports_sends_email(db, monkeypatch):
+def test_monthly_forecast_with_dashboard_url_sends_email(db, monkeypatch):
     _patch_env(monkeypatch)
     with _patch_smtp() as mock_smtp:
         mock_smtp.return_value.__enter__ = lambda s: MagicMock()
@@ -238,12 +221,12 @@ def test_monthly_forecast_with_reports_sends_email(db, monkeypatch):
             expected_low=1.0, expected_high=3.0, downside=-5.0,
             key_risk="Rate hike", position_outlooks=[],
             planned_action="none", db=db,
-            reports=[_make_report("AAPL")],
+            dashboard_url="https://dash.example.com",
         )
     assert mock_smtp.called
 
 
-def test_monthly_forecast_body_contains_self_critique(db, monkeypatch):
+def test_monthly_forecast_body_contains_dashboard_url(db, monkeypatch):
     _patch_env(monkeypatch)
     sent_bodies = []
 
@@ -260,12 +243,12 @@ def test_monthly_forecast_body_contains_self_critique(db, monkeypatch):
             expected_low=1.0, expected_high=3.0, downside=-5.0,
             key_risk="Rate hike", position_outlooks=[],
             planned_action="none", db=db,
-            reports=[_make_report("AAPL")],
+            dashboard_url="https://dash.example.com",
         )
-    assert any("anchored on prior growth" in b for b in sent_bodies)
+    assert any("https://dash.example.com" in b for b in sent_bodies)
 
 
-def test_monthly_forecast_body_contains_data_request(db, monkeypatch):
+def test_monthly_forecast_body_contains_key_risk(db, monkeypatch):
     _patch_env(monkeypatch)
     sent_bodies = []
 
@@ -280,14 +263,13 @@ def test_monthly_forecast_body_contains_data_request(db, monkeypatch):
         send_monthly_forecast(
             month_label="May 2026", macro_regime="Risk-On",
             expected_low=1.0, expected_high=3.0, downside=-5.0,
-            key_risk="Rate hike", position_outlooks=[],
+            key_risk="Rate spike scenario", position_outlooks=[],
             planned_action="none", db=db,
-            reports=[_make_report("AAPL")],
         )
-    assert any("FCF for last 3 years" in b for b in sent_bodies)
+    assert any("Rate spike scenario" in b for b in sent_bodies)
 
 
-def test_monthly_forecast_without_reports_still_sends(db, monkeypatch):
+def test_monthly_forecast_without_url_still_sends(db, monkeypatch):
     _patch_env(monkeypatch)
     with _patch_smtp() as mock_smtp:
         mock_smtp.return_value.__enter__ = lambda s: MagicMock()
