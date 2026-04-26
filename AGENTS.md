@@ -26,6 +26,7 @@ WarBuf/
 ├── WarBuf.md          ← full project spec and strategy reference
 ├── rules.yaml         ← single control surface (no code edits needed for tuning)
 ├── main.py            ← APScheduler entry point; weekly_job + monthly_job + nightly_backup_job + cache_prewarm_job
+│                        Pure helpers: _detect_sell_trigger, _is_nyse_holiday, _is_nyse_trading_hours, _is_first_monday
 ├── db.py              ← SQLite persistence (5 tables, WAL mode, no ORM)
 ├── reporter.py        ← plain-text email reports (5-line weekly ping + monthly forecast)
 ├── dashboard.py       ← Streamlit dashboard (Portfolio, Weekly Report, Trades, Decisions, Performance, Forecasts)
@@ -43,7 +44,7 @@ WarBuf/
 │   ├── paper.py       ← paper trading; logs to SQLite, never touches real money
 │   └── ibkr.py        ← IBKR Web API via plain requests (no ib_insync — archived 2024)
 │
-├── tests/             ← 218 tests; all external I/O mocked
+├── tests/             ← 231 tests; all external I/O mocked
 │   ├── test_scorer.py           ← 19 tests
 │   ├── test_fees.py             ← 15 tests
 │   ├── test_screener.py         ← 17 tests  (passes_hard_filters)
@@ -171,6 +172,20 @@ Checked at the start of every `monthly_job`.
 
 Stop-loss takes priority over score collapse when both conditions fire simultaneously.
 Detection logic lives in `_detect_sell_trigger()` in `main.py` (pure function, no I/O — fully unit tested).
+
+### Scheduler reliability
+
+All APScheduler jobs have `misfire_grace_time=3600` (1 h). If the Docker container restarts within
+an hour of a scheduled run, APScheduler fires the missed job immediately on restart instead of
+silently skipping it.
+
+Both `weekly_job` and `monthly_job` check `_is_nyse_holiday(date.today(), rules["nyse_holidays"])`
+at the top; if the date appears in the ISO-date list in `rules.yaml`, the job logs a notice and
+returns immediately. Update `nyse_holidays` each December.
+
+When `paper_mode: false` and the monthly order fires before NYSE open (09:00 Madrid ≈ 03:00 ET),
+`_is_nyse_trading_hours()` detects the pre-open window and logs a warning.
+The MKT DAY order still submits — IBKR queues it for execution at the 09:30 ET open bell.
 
 ---
 
@@ -511,10 +526,10 @@ Skip task tracking for single, trivial operations.
 | Item                       | Notes                                                                                                                                                             |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | IBKR gateway Docker image  | Use `ghcr.io/extrange/ibkr-cp-gateway` or official IBKR image; needs manual login first                                                                           |
-| Live trading               | Set `paper_mode: false` only after 30+ paper days and ~€3,000 capital                                                                                             |
+| Live trading               | Set `paper_mode: false` only after 30+ paper days and ~€3,000 capital; see Live Trading Readiness sidebar in dashboard |
 | Watchlist curation         | Review quarterly; currently 30 tickers in `rules.yaml`                                                                                                            |
 | Nightly backup destination | `nightly_backup_job` writes to `./backups/` by default; set `BACKUP_DIR` env var to point to an external volume or Backblaze B2 mount for off-server durability   |
-| GitHub Actions CI/CD       | Repo is public. Add `HETZNER_HOST=178.104.225.167`, `HETZNER_USER=root`, `HETZNER_SSH_KEY` (private key PEM) to Actions Secrets for auto-deploy on push to `main` |
+| NYSE holidays (annual)     | Update `nyse_holidays` list in `rules.yaml` each December for the coming year                                                                                     |
 
 ---
 

@@ -119,6 +119,15 @@ page = st.sidebar.radio(
 if _is_paper_mode():
     st.sidebar.divider()
     st.sidebar.warning("🧪 **PAPER MODE**\n\nAll data is simulated. No real orders have been placed.", icon=None)
+    with st.sidebar.expander("🔒 Live Trading Readiness"):
+        df_days = _query("SELECT COUNT(DISTINCT DATE(date)) AS days FROM trades WHERE ibkr_order_id LIKE 'PAPER-%'")
+        paper_days = int(df_days["days"].iloc[0]) if not df_days.empty and not df_days["days"].isna().all() else 0
+        st.write(f"{'✅' if paper_days >= 30 else '⏳'} Paper days logged: **{paper_days}/30**")
+        st.write("☐ Capital ≥ €3,000 (manual check)")
+        st.write("☐ IB Gateway Docker container running")
+        st.write("☐ Gateway authenticated at `localhost:5000`")
+        st.write("☐ No competing IB session (TWS closed)")
+        st.write("☐ Set `paper_mode: false` in `rules.yaml`")
 
 st.sidebar.divider()
 _regime, _spy_cur, _spy_sma = _get_macro_regime()

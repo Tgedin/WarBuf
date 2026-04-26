@@ -23,7 +23,7 @@ from __future__ import annotations
 import gzip
 import os
 import shutil
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -112,8 +112,12 @@ def _detect_sell_trigger(
 # ── Weekly job ────────────────────────────────────────────────────────────────
 
 def weekly_job() -> None:
-    print(f"[WEEKLY] Starting — {date.today()}")
     rules  = _load_rules()
+    holidays = rules.get("nyse_holidays", [])
+    if _is_nyse_holiday(date.today(), holidays):
+        print(f"[WEEKLY] NYSE holiday — skipping {date.today()}")
+        return
+    print(f"[WEEKLY] Starting — {date.today()}")
     db     = Database(DB_PATH)
     broker = _make_broker(rules, db)
 
@@ -230,8 +234,13 @@ def monthly_job() -> None:
     if not _is_first_monday():
         return
 
-    print(f"[MONTHLY] Starting full analysis — {date.today()}")
     rules  = _load_rules()
+    holidays = rules.get("nyse_holidays", [])
+    if _is_nyse_holiday(date.today(), holidays):
+        print(f"[MONTHLY] NYSE holiday — skipping {date.today()}")
+        return
+
+    print(f"[MONTHLY] Starting full analysis — {date.today()}")
     db     = Database(DB_PATH)
     broker = _make_broker(rules, db)
     rhash  = rules_hash(RULES_PATH)
@@ -300,6 +309,8 @@ def monthly_job() -> None:
 
         eur_usd_rate = rules.get("eur_usd_rate", 1.0)
         try:
+            if not rules.get("paper_mode", True) and not _is_nyse_trading_hours():
+                print(f"[MONTHLY] {candidate.ticker}: market pre-open — MKT DAY order will queue for NYSE open 09:30 ET")
             result = broker.place_order(candidate.ticker, "buy", min_notional_usd)
             fees = compute_fees("buy", result.qty, min_notional_usd)
             db.record_trade(
@@ -325,6 +336,28 @@ def monthly_job() -> None:
 def _is_first_monday() -> bool:
     today = date.today()
     return today.weekday() == 0 and today.day <= 7
+
+
+def _is_nyse_holiday(today: date, holidays: list[str]) -> bool:
+    """Return True when *today* appears in the ISO-date holiday list from rules.yaml."""
+    return today.isoformat() in holidays
+
+
+def _is_nyse_trading_hours(now_utc: datetime | None = None) -> bool:
+    """True when *now_utc* falls within NYSE regular session (Mon–Fri 09:30–16:00 ET).
+
+    ET offset: UTC-4 (EDT, months 3–11) or UTC-5 (EST, months 12/1/2).
+    Accepts an explicit *now_utc* for unit-testing; defaults to current UTC time.
+    """
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    et_offset = -4 if 3 <= now_utc.month <= 11 else -5
+    now_et = now_utc + timedelta(hours=et_offset)
+    if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    market_open  = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
+    market_close = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
+    return market_open <= now_et <= market_close
 
 
 def _next_first_monday_str() -> str:
@@ -378,12 +411,12 @@ def cache_prewarm_job() -> None:
 
 if __name__ == "__main__":
     scheduler = BlockingScheduler(timezone="Europe/Madrid")
-    scheduler.add_job(weekly_job,         "cron", day_of_week="mon", hour=9,  minute=0)
-    scheduler.add_job(monthly_job,        "cron", day_of_week="mon", hour=9,  minute=5)
-    scheduler.add_job(cache_prewarm_job,  "cron", day_of_week="sun", hour=22, minute=0)
+    scheduler.add_job(weekly_job,        "cron", day_of_week="mon", hour=9,  minute=0,  misfire_grace_time=3600)
+    scheduler.add_job(monthly_job,       "cron", day_of_week="mon", hour=9,  minute=5,  misfire_grace_time=3600)
+    scheduler.add_job(cache_prewarm_job, "cron", day_of_week="sun", hour=22, minute=0,  misfire_grace_time=3600)
     scheduler.add_job(
         nightly_backup_job, "cron", hour=3, minute=0,
-        timezone="UTC",
+        timezone="UTC", misfire_grace_time=1800,
     )
     print("WarBuf scheduler started. Waiting for Monday 09:00 Europe/Madrid.")
     scheduler.start()
