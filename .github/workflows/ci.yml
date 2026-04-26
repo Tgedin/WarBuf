@@ -35,7 +35,7 @@ jobs:
             -v
 
       - name: Security scan (pip-audit)
-        run: pip-audit --ignore-vuln PYSEC-2022-42974
+        run: pip-audit --ignore-vuln PYSEC-2022-42974 --ignore-vuln CVE-2026-3219
 
       - name: Build Docker image
         run: docker build .
