@@ -1,5 +1,7 @@
 # AGENTS.md — WarBuf Coding Guide
 
+**Repository**: https://github.com/Tgedin/WarBuf
+
 > **Maintenance rule**: Update this file for every substantial modification to the codebase —
 > new modules, changed architecture, altered strategy parameters, added dependencies,
 > or modified DB schema. An outdated AGENTS.md is worse than none.
