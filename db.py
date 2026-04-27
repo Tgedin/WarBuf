@@ -216,7 +216,6 @@ class Database:
     ) -> None:
         price_eur = price_usd / eur_usd_rate
         fees_eur  = fees_usd  / eur_usd_rate
-
         row = self._conn.execute(
             """SELECT qty, avg_cost_basis, avg_cost_basis_eur,
                       total_fees_paid, total_fees_eur
