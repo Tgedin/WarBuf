@@ -35,6 +35,7 @@ cash_floor_pct: 10 # never deploy below 10% cash
 # Risk
 stop_loss_pct: 15 # auto-sell if position down >= 15% from cost basis
 score_collapse_delta: 0.25 # trim 50% if score drops this much in one week
+# weekly_buy_threshold: 0.75  # uncomment to enable mid-month buys when score >= this value
 
 # Execution
 broker: ibkr

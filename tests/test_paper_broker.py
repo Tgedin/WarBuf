@@ -18,11 +18,25 @@ def broker(db):
     return PaperBroker(db)
 
 
+# Patch date.today().weekday() to return Tuesday (not Monday) for all tests that
+# exercise the close-price path so they pass regardless of what day tests run on.
+_NOT_MONDAY = patch("broker.paper.date") 
+
+
+def _setup_not_monday(mock_date):
+    """Configure the date mock to return weekday=1 (Tuesday)."""
+    from datetime import date as _real_date
+    mock_date.today.return_value.weekday.return_value = 1
+    mock_date.side_effect = lambda *a, **kw: _real_date(*a, **kw)
+
+
 class TestPaperBroker:
     def test_buy_records_position(self, broker, db):
         # fill_price = 100.0 * 1.001 = 100.1; qty = int(500 / 100.1) = 4
-        with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
-            result = broker.place_order("AAPL", "buy", 500.0)
+        with _NOT_MONDAY as md:
+            _setup_not_monday(md)
+            with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
+                result = broker.place_order("AAPL", "buy", 500.0)
 
         assert result.ticker == "AAPL"
         assert result.side == "buy"
@@ -36,10 +50,12 @@ class TestPaperBroker:
     def test_second_buy_averages_cost_basis(self, broker, db):
         # buy1: fill=100.1, qty=int(500/100.1)=4
         # buy2: fill=200.2, qty=int(400/200.2)=1 → total 5 shares
-        with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
-            broker.place_order("AAPL", "buy", 500.0)
-        with patch.object(PaperBroker, "_last_close_price", return_value=200.0):
-            broker.place_order("AAPL", "buy", 400.0)
+        with _NOT_MONDAY as md:
+            _setup_not_monday(md)
+            with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
+                broker.place_order("AAPL", "buy", 500.0)
+            with patch.object(PaperBroker, "_last_close_price", return_value=200.0):
+                broker.place_order("AAPL", "buy", 400.0)
 
         positions = db.get_positions()
         assert positions["AAPL"]["qty"] == 5
@@ -50,22 +66,28 @@ class TestPaperBroker:
     def test_sell_reduces_position(self, broker, db):
         # buy: fill=100.1, qty=int(1000/100.1)=9
         # sell: fill=99.9,  qty=int(500/99.9)=5  → 4 remaining
-        with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
-            broker.place_order("AAPL", "buy", 1_000.0)
-            broker.place_order("AAPL", "sell", 500.0)
+        with _NOT_MONDAY as md:
+            _setup_not_monday(md)
+            with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
+                broker.place_order("AAPL", "buy", 1_000.0)
+                broker.place_order("AAPL", "sell", 500.0)
 
         assert db.get_positions()["AAPL"]["qty"] == 4
 
     def test_sell_all_removes_position(self, broker, db):
-        with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
-            broker.place_order("AAPL", "buy", 500.0)
-            broker.place_order("AAPL", "sell", 500.0)
+        with _NOT_MONDAY as md:
+            _setup_not_monday(md)
+            with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
+                broker.place_order("AAPL", "buy", 500.0)
+                broker.place_order("AAPL", "sell", 500.0)
 
         assert "AAPL" not in db.get_positions()
 
     def test_fees_accumulated_in_position(self, broker, db):
-        with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
-            broker.place_order("MSFT", "buy", 500.0)
+        with _NOT_MONDAY as md:
+            _setup_not_monday(md)
+            with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
+                broker.place_order("MSFT", "buy", 500.0)
 
         fees_paid = db.get_positions()["MSFT"]["total_fees_paid"]
         assert fees_paid > 0
@@ -88,32 +110,50 @@ class TestPaperBroker:
 
     def test_buy_reduces_cash(self, broker, db):
         db.seed_cash(3000.0)
-        with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
-            broker.place_order("AAPL", "buy", 500.0)
+        with _NOT_MONDAY as md:
+            _setup_not_monday(md)
+            with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
+                broker.place_order("AAPL", "buy", 500.0)
         # cash should be < 3000 (exact amount depends on fees)
         assert db.get_cash_eur() < 3000.0
 
     def test_sell_increases_cash(self, broker, db):
         db.seed_cash(3000.0)
-        with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
-            broker.place_order("AAPL", "buy", 500.0)
-            cash_after_buy = db.get_cash_eur()
-            broker.place_order("AAPL", "sell", 300.0)
+        with _NOT_MONDAY as md:
+            _setup_not_monday(md)
+            with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
+                broker.place_order("AAPL", "buy", 500.0)
+                cash_after_buy = db.get_cash_eur()
+                broker.place_order("AAPL", "sell", 300.0)
         assert db.get_cash_eur() > cash_after_buy
 
     def test_each_order_gets_unique_id(self, broker):
         ids = set()
-        with patch.object(PaperBroker, "_last_close_price", return_value=50.0):
-            for _ in range(5):
-                result = broker.place_order("MSFT", "buy", 300.0)
-                ids.add(result.order_id)
+        with _NOT_MONDAY as md:
+            _setup_not_monday(md)
+            with patch.object(PaperBroker, "_last_close_price", return_value=50.0):
+                for _ in range(5):
+                    result = broker.place_order("MSFT", "buy", 300.0)
+                    ids.add(result.order_id)
         assert len(ids) == 5
 
     def test_eur_rate_propagates_to_db(self, db):
         """PaperBroker should accept eur_usd_rate and persist it via record_trade."""
         broker_eur = PaperBroker(db, eur_usd_rate=1.08)
-        with patch.object(PaperBroker, "_last_close_price", return_value=108.0):
-            broker_eur.place_order("GOOG", "buy", 540.0)
+        with _NOT_MONDAY as md:
+            _setup_not_monday(md)
+            with patch.object(PaperBroker, "_last_close_price", return_value=108.0):
+                broker_eur.place_order("GOOG", "buy", 540.0)
         row = db._conn.execute("SELECT eur_usd_rate, price_eur FROM trades").fetchone()
         assert row["eur_usd_rate"] == pytest.approx(1.08)
         assert row["price_eur"] == pytest.approx(100.0, rel=1e-3)
+
+    def test_monday_uses_open_price(self, broker, db):
+        """On Mondays the fill price is based on the opening candle, not the prior close."""
+        with patch("broker.paper.date") as mock_date:
+            mock_date.today.return_value.weekday.return_value = 0  # Monday
+            with patch("broker.paper.get_open_price", return_value=110.0):
+                result = broker.place_order("AAPL", "buy", 500.0)
+        # fill_price = 110.0 * 1.001 = 110.11; qty = int(500 / 110.11) = 4
+        assert result.qty == 4
+        assert result.filled_price_usd == pytest.approx(110.0 * 1.001, rel=1e-3)

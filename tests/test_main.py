@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from main import _detect_sell_trigger, _is_nyse_holiday, _is_nyse_trading_hours
+from main import _detect_sell_trigger, _is_nyse_holiday, _is_nyse_trading_hours, intraday_job
 
 # ── _detect_sell_trigger ──────────────────────────────────────────────────────
 
@@ -226,3 +226,28 @@ def test_trading_hours_weekend():
 
 def test_trading_hours_winter_session():
     assert _is_nyse_trading_hours(_WINTER_UTC) is True
+
+
+# ── intraday_job ───────────────────────────────────────────────────────────
+
+def test_intraday_job_noop_outside_trading_hours(monkeypatch, tmp_path):
+    """intraday_job returns immediately when NYSE is closed."""
+    monkeypatch.chdir(tmp_path)
+    called = []
+    monkeypatch.setattr("main._is_nyse_trading_hours", lambda: False)
+    monkeypatch.setattr("main.Database", lambda *a, **kw: called.append(1))
+    intraday_job()
+    # Database should never be opened when outside trading hours
+    assert called == []
+
+
+def test_intraday_job_noop_on_holiday(monkeypatch, tmp_path):
+    """intraday_job returns immediately on NYSE holidays."""
+    monkeypatch.chdir(tmp_path)
+    called = []
+    monkeypatch.setattr("main._is_nyse_trading_hours", lambda: True)
+    monkeypatch.setattr("main._load_rules", lambda: {"nyse_holidays": ["2026-01-01"], "paper_mode": True})
+    monkeypatch.setattr("main._is_nyse_holiday", lambda d, h: True)
+    monkeypatch.setattr("main.Database", lambda *a, **kw: called.append(1))
+    intraday_job()
+    assert called == []

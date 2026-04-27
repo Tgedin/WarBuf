@@ -221,3 +221,77 @@ def test_resolve_conid_raises_when_no_us_exchange():
     broker._session = _mock_session({"/trsrv/stocks": response})
     with pytest.raises(RuntimeError):
         broker._resolve_conid("BARC")
+
+
+# ── _tickle robustness ────────────────────────────────────────────────────────
+
+def test_tickle_raises_after_two_failed_attempts():
+    broker = _make_broker()
+    broker._session = _mock_session({})
+    broker._session.get.side_effect = RuntimeError("connection refused")
+    with pytest.raises(RuntimeError, match="gateway did not respond"):
+        broker._tickle()
+
+
+# ── native STP order ──────────────────────────────────────────────────────────
+
+def test_place_order_buy_submits_stop_order():
+    """After a buy, a GTC STP order is submitted at fill_price * (1 - stop_loss_pct/100)."""
+    broker = IBKRBroker(gateway_url="https://localhost:5000", account_id="U12345", stop_loss_pct=15.0)
+    posted_payloads = []
+    call_count = [0]
+
+    def fake_post(url, **kwargs):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        if "/orders" in url:
+            call_count[0] += 1
+            posted_payloads.append(kwargs.get("json", {}))
+            if call_count[0] == 1:
+                resp.json.return_value = [{"order_id": "mkt-001", "price": 150.0}]
+            else:
+                resp.json.return_value = [{"order_id": "stp-001", "order_status": "Submitted"}]
+        elif "/iserver/questions/suppress" in url:
+            resp.json.return_value = {"status": "submitted"}
+        else:
+            resp.json.return_value = {}
+        return resp
+
+    broker._session = _mock_session({"/trsrv/stocks": _valid_conid_response("AAPL")})
+    broker._session.post.side_effect = fake_post
+
+    with patch("broker.ibkr.get_last_price", return_value=150.0):
+        broker.place_order("AAPL", "buy", 750.0)
+
+    assert call_count[0] == 2
+    stp_payload = posted_payloads[1]["orders"][0]
+    assert stp_payload["orderType"] == "STP"
+    assert stp_payload["tif"] == "GTC"
+    assert stp_payload["price"] == pytest.approx(150.0 * 0.85, rel=1e-3)
+
+
+def test_place_order_sell_does_not_submit_stop_order():
+    """STP order must not be submitted after a sell."""
+    broker = IBKRBroker(gateway_url="https://localhost:5000", account_id="U12345", stop_loss_pct=15.0)
+    post_to_orders = []
+
+    def fake_post(url, **kwargs):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        if "/orders" in url:
+            post_to_orders.append(kwargs.get("json", {}))
+            resp.json.return_value = [{"order_id": "sell-001", "price": 150.0}]
+        elif "/iserver/questions/suppress" in url:
+            resp.json.return_value = {"status": "submitted"}
+        else:
+            resp.json.return_value = {}
+        return resp
+
+    broker._session = _mock_session({"/trsrv/stocks": _valid_conid_response("AAPL")})
+    broker._session.post.side_effect = fake_post
+
+    with patch("broker.ibkr.get_last_price", return_value=150.0):
+        broker.place_order("AAPL", "sell", 750.0)
+
+    assert len(post_to_orders) == 1
+    assert post_to_orders[0]["orders"][0]["side"] == "SELL"

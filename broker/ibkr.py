@@ -80,9 +80,11 @@ class IBKRBroker(BrokerInterface):
         self,
         gateway_url: str | None = None,
         account_id: str | None = None,
+        stop_loss_pct: float = 15.0,
     ) -> None:
         self._base    = (gateway_url or os.environ["IBKR_GATEWAY_URL"]).rstrip("/")
         self._account = account_id or os.environ["IBKR_ACCOUNT_ID"]
+        self._stop_loss_pct = stop_loss_pct
 
         is_localhost = any(self._base.startswith(p) for p in _LOCALHOST_PREFIXES)
         self._session = requests.Session()
@@ -151,6 +153,11 @@ class IBKRBroker(BrokerInterface):
             side.upper(), ticker, qty, filled_price, order_id, fees,
         )
 
+        # Submit a server-side GTC stop-loss order immediately after a buy so that
+        # IBKR will execute the stop intraday even if the bot is offline.
+        if side == "buy":
+            self._submit_stop_loss(ticker, conid, qty, filled_price)
+
         return OrderResult(
             ticker=ticker,
             side=side,
@@ -161,15 +168,56 @@ class IBKRBroker(BrokerInterface):
 
     # ── Session management ────────────────────────────────────────────────────
 
+    def _submit_stop_loss(self, ticker: str, conid: int, qty: float, fill_price: float) -> None:
+        """Submit a GTC stop order at fill_price * (1 - stop_loss_pct/100) after a buy.
+
+        The order is held on IBKR's servers so the stop executes intraday even
+        if the bot is down between weekly checks.
+        Failures are logged as warnings — a failed stop order must not block the
+        buy record from being committed.
+        """
+        stop_price = round(fill_price * (1.0 - self._stop_loss_pct / 100.0), 2)
+        payload = {
+            "orders": [{
+                "conid":     conid,
+                "orderType": "STP",
+                "side":      "SELL",
+                "tif":       "GTC",
+                "quantity":  qty,
+                "price":     stop_price,
+            }]
+        }
+        try:
+            response   = self._post(f"/v1/api/iserver/account/{self._account}/orders", payload)
+            order_data = self._confirm_order_replies(response)
+            logger.info(
+                "IBKRBroker: STP order submitted for %s — stop @ %.2f USD (order_id=%s)",
+                ticker, stop_price, order_data.get("order_id", "unknown"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "IBKRBroker: failed to submit STP order for %s @ %.2f: %s",
+                ticker, stop_price, exc,
+            )
+
+    # ── Session management ────────────────────────────────────────────────────
+
     def _tickle(self) -> None:
         """
         Heartbeat to prevent the gateway session from expiring.
         Call this before any batch of API requests.
+        Raises RuntimeError if the gateway is unreachable after two attempts.
         """
-        try:
-            self._get("/v1/api/tickle")
-        except Exception as exc:
-            logger.warning("IBKRBroker._tickle failed (session may be stale): %s", exc)
+        for attempt in range(2):
+            try:
+                self._get("/v1/api/tickle")
+                return
+            except Exception as exc:
+                logger.warning("IBKRBroker._tickle attempt %d failed: %s", attempt + 1, exc)
+        raise RuntimeError(
+            "IBKRBroker: gateway did not respond to keepalive after 2 attempts. "
+            "Ensure the IBKR CP Gateway is running at: %s" % self._base
+        )
 
     def _ensure_brokerage_session(self) -> None:
         """

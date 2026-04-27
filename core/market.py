@@ -187,6 +187,34 @@ def get_last_price(ticker: str) -> float | None:
     return _safe_float(cached.get("price"))
 
 
+def get_open_price(ticker: str) -> float | None:
+    """
+    Return today's opening price for a ticker in USD (1h cache).
+
+    Uses the first 1-minute candle of the current trading day, which closely
+    matches what an IBKR MKT DAY order would fill at on the open.
+    Falls back to the last close price if the market has not yet opened.
+    Returns None on any unrecoverable failure.
+    """
+    path = _cache_path(f"{ticker}_open")
+    cached = _load_cache(path, PRICE_TTL_S)
+
+    if cached is None:
+        try:
+            hist = yf.Ticker(ticker).history(period="1d", interval="1m")
+            if hist.empty:
+                # Market not yet open — fall back to last close
+                return get_last_price(ticker)
+            price = float(hist["Open"].iloc[0])
+            cached = {"price": price}
+        except Exception as exc:
+            print(f"[MARKET] Open price fetch failed for {ticker}: {exc}")
+            return get_last_price(ticker)
+        _save_cache(path, cached)
+
+    return _safe_float(cached.get("price"))
+
+
 # ── Private helpers ───────────────────────────────────────────────────────────
 
 def _compute_fcf_margin(info: dict) -> float | None:

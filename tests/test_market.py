@@ -12,6 +12,7 @@ from core.market import (
     get_fundamentals,
     get_momentum,
     get_news_headlines,
+    get_open_price,
     get_spy_sma,
     is_risk_on,
 )
@@ -193,3 +194,56 @@ def test_get_news_headlines_returns_empty_on_exception(tmp_path, monkeypatch):
         mock_yf.return_value.news = []
         result = get_news_headlines("AAPL")
     assert result == []
+
+
+# ── get_open_price ────────────────────────────────────────────────────────
+
+def _mock_intraday_history(open_prices: list[float]):
+    import pandas as pd
+    opens = pd.Series(open_prices)
+    df = MagicMock()
+    df.empty = False
+    df.__getitem__ = lambda self, key: opens if key == "Open" else MagicMock()
+    return df
+
+
+def test_get_open_price_returns_float(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with patch("yfinance.Ticker") as mock_yf:
+        mock_yf.return_value.history.return_value = _mock_intraday_history([150.0, 151.0])
+        result = get_open_price("AAPL")
+    assert isinstance(result, float)
+
+
+def test_get_open_price_returns_first_candle_open(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with patch("yfinance.Ticker") as mock_yf:
+        mock_yf.return_value.history.return_value = _mock_intraday_history([123.45, 124.0])
+        result = get_open_price("AAPL")
+    assert result == pytest.approx(123.45)
+
+
+def test_get_open_price_falls_back_on_empty_history(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    empty_df = MagicMock()
+    empty_df.empty = True
+    close_df = MagicMock()
+    close_df.empty = False
+    import pandas as pd
+    closes = pd.Series([200.0, 201.0])
+    close_df.__getitem__ = lambda self, key: closes if key == "Close" else MagicMock()
+    close_df.__len__ = lambda self: 2
+
+    call_count = [0]
+
+    def fake_history(**kwargs):
+        call_count[0] += 1
+        if kwargs.get("interval") == "1m":
+            return empty_df
+        return close_df
+
+    with patch("yfinance.Ticker") as mock_yf:
+        mock_yf.return_value.history.side_effect = fake_history
+        result = get_open_price("AAPL")
+    # Should have fallen back to get_last_price and returned a float
+    assert result == pytest.approx(201.0)

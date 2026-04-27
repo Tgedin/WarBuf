@@ -58,7 +58,7 @@ def _load_rules() -> dict:
 def _make_broker(rules: dict, db: Database):
     if rules.get("paper_mode", True):
         return PaperBroker(db, eur_usd_rate=rules.get("eur_usd_rate", 1.0))
-    return IBKRBroker()
+    return IBKRBroker(stop_loss_pct=rules.get("stop_loss_pct", 15.0))
 
 
 def _make_filters(rules: dict) -> HardFilters:
@@ -107,6 +107,70 @@ def _detect_sell_trigger(
             notional / 2,
         )
     return None
+
+
+# ── Intraday job ──────────────────────────────────────────────────────────────
+
+def intraday_job() -> None:
+    """Check stop-loss for all held positions every hour during NYSE session.
+
+    Runs Mon–Fri 15:30–21:30 Europe/Madrid (= 09:30–15:30 ET).
+    Only checks stop-loss (price-based); score-collapse requires a full weekly
+    rescore and is intentionally left to weekly_job.
+    Exits immediately outside NYSE regular hours (holidays, early closes).
+    """
+    if not _is_nyse_trading_hours():
+        return
+
+    rules    = _load_rules()
+    holidays = rules.get("nyse_holidays", [])
+    if _is_nyse_holiday(date.today(), holidays):
+        return
+
+    db     = Database(DB_PATH)
+    broker = _make_broker(rules, db)
+
+    stop_loss_pct  = rules.get("stop_loss_pct", 15)
+    eur_usd_rate   = rules.get("eur_usd_rate", 1.0)
+    db_positions   = db.get_positions()
+
+    for ticker, pos in db_positions.items():
+        qty            = pos.get("qty", 0.0)
+        cost_basis_eur = pos.get("avg_cost_basis_eur", 0.0)
+        if qty <= 0 or cost_basis_eur <= 0:
+            continue
+
+        last_price_usd = get_last_price(ticker)
+        if last_price_usd is None:
+            continue
+
+        value_eur      = (qty * last_price_usd) / eur_usd_rate
+        gross_gain_eur = value_eur - cost_basis_eur * qty
+        return_pct     = (gross_gain_eur / (cost_basis_eur * qty)) * 100
+
+        if return_pct <= -stop_loss_pct:
+            notional_usd = qty * last_price_usd
+            try:
+                broker.place_order(ticker, "sell", notional_usd)
+                fees = compute_fees("sell", qty, notional_usd)
+                db.record_trade(
+                    ticker=ticker,
+                    side="sell",
+                    qty=qty,
+                    price_usd=last_price_usd,
+                    fees_usd=fees.total_usd,
+                    net_cost_basis=notional_usd - fees.total_usd,
+                    ibkr_order_id=None,
+                    eur_usd_rate=eur_usd_rate,
+                )
+                print(
+                    f"[INTRADAY] STOP-LOSS {ticker}: {return_pct:.1f}% — sold {qty:.0f} shares"
+                    f" @ ${last_price_usd:.2f}"
+                )
+            except Exception as exc:
+                print(f"[INTRADAY] Stop-loss order failed for {ticker}: {exc}", flush=True)
+
+    db.close()
 
 
 # ── Weekly job ────────────────────────────────────────────────────────────────
@@ -186,6 +250,64 @@ def weekly_job() -> None:
     if not risk_on:
         alerts.append("MACRO GUARD ACTIVE — SPY below 200d SMA — no new buys")
 
+    # ── Weekly opportunistic buy ───────────────────────────────────────────────
+    # If a watchlist ticker scores above weekly_buy_threshold and we have room,
+    # buy a position mid-month without waiting for the monthly job.
+    # Off by default — only active when weekly_buy_threshold is set in rules.yaml.
+    weekly_threshold = rules.get("weekly_buy_threshold")
+    if risk_on and weekly_threshold is not None:
+        positions_now = broker.get_positions()
+        satellite_count = sum(1 for t in positions_now if t not in rules.get("core_etfs", {}))
+        max_satellites  = rules.get("max_positions", 5)
+        cash_eur_now    = db.get_cash_eur()
+        total_eur_now   = cash_eur_now + sum(
+            db.get_positions().get(t, {}).get("avg_cost_basis_eur", 0) *
+            db.get_positions().get(t, {}).get("qty", 0)
+            for t in positions_now
+        )
+        cash_floor_eur  = total_eur_now * rules.get("cash_floor_pct", 10) / 100
+        min_notional_usd = rules.get("min_position_eur", 300) * eur_usd_rate
+        deployable_usd   = (cash_eur_now - cash_floor_eur) * eur_usd_rate
+
+        if satellite_count < max_satellites and deployable_usd >= min_notional_usd:
+            candidates = [
+                s for s in scored
+                if s.score >= weekly_threshold
+                and s.ticker not in positions_now
+                and s.ticker not in rules.get("core_etfs", {})
+            ]
+            if candidates:
+                best = candidates[0]  # scored list is already sorted descending
+                try:
+                    result = broker.place_order(best.ticker, "buy", min_notional_usd)
+                except Exception as exc:
+                    print(f"[WEEKLY] Opportunistic buy failed for {best.ticker}: {exc}")
+                    result = None
+                if result is not None:
+                    try:
+                        fees = compute_fees("buy", result.qty, min_notional_usd)
+                        db.record_trade(
+                            ticker=result.ticker,
+                            side="buy",
+                            qty=result.qty,
+                            price_usd=result.filled_price_usd,
+                            fees_usd=fees.total_usd,
+                            net_cost_basis=min_notional_usd + fees.total_usd,
+                            ibkr_order_id=result.order_id,
+                            eur_usd_rate=eur_usd_rate,
+                        )
+                        alerts.append(
+                            f"{best.ticker}  WEEKLY BUY (score={best.score:.2f} ≥ {weekly_threshold})"
+                        )
+                        print(f"[WEEKLY] Opportunistic buy: {best.ticker} {result.qty} shares @ ${result.filled_price_usd:.2f}")
+                    except Exception as exc:
+                        import sys
+                        print(
+                            f"[CRITICAL] {best.ticker} order_id={result.order_id} executed but "
+                            f"record_trade failed: {exc}  — reconcile manually!",
+                            file=sys.stderr,
+                        )
+
     # Weekly LLM veto check for held positions
     held_scored = [s for s in scored if s.ticker in positions]
     if held_scored:
@@ -205,6 +327,19 @@ def weekly_job() -> None:
     for ticker in list(positions)[:5]:
         for headline in get_news_headlines(ticker, max_items=2):
             news.append(f"{ticker}  {headline}")
+
+    # Record weekly portfolio snapshot for the Performance tab.
+    positions_snap = db.get_positions()
+    cash_snap      = db.get_cash_eur()
+    total_eur_snap = cash_snap + sum(
+        p["avg_cost_basis_eur"] * p["qty"] for p in positions_snap.values()
+    )
+    spy_price_eur = spy_price / eur_usd_rate
+    db.record_performance(
+        portfolio_value_eur=total_eur_snap,
+        benchmark_value=spy_price_eur,
+        cash_eur=cash_snap,
+    )
 
     is_first_mon = _is_first_monday()
     next_action = "Full analysis runs today." if is_first_mon else f"Full analysis: {_next_first_monday_str()}"
@@ -263,7 +398,11 @@ def monthly_job() -> None:
         notional_usd = total_eur * target_frac * eur_usd_rate
         try:
             result = broker.place_order(etf, "buy", notional_usd)
-            fees   = compute_fees("buy", result.qty, notional_usd)
+        except Exception as exc:
+            print(f"[MONTHLY] Core ETF order failed for {etf}: {exc}")
+            continue
+        try:
+            fees = compute_fees("buy", result.qty, notional_usd)
             db.record_trade(
                 ticker=result.ticker,
                 side="buy",
@@ -274,9 +413,15 @@ def monthly_job() -> None:
                 ibkr_order_id=result.order_id,
                 eur_usd_rate=eur_usd_rate,
             )
-            print(f"[MONTHLY] Core ETF bought: {etf}  {result.qty:.4f} shares @ ${result.filled_price_usd:.2f}  (€{notional_usd/eur_usd_rate:.0f})")
+            print(f"[MONTHLY] Core ETF bought: {etf}  {result.qty:.0f} shares @ ${result.filled_price_usd:.2f}  (€{notional_usd/eur_usd_rate:.0f})")
         except Exception as exc:
-            print(f"[MONTHLY] Core ETF order failed for {etf}: {exc}")
+            # Order executed on broker but DB write failed — requires manual reconciliation.
+            import sys
+            print(
+                f"[CRITICAL] Core ETF {etf} order_id={result.order_id} executed but "
+                f"record_trade failed: {exc}  — reconcile manually!",
+                file=sys.stderr,
+            )
 
     top5, rejected = run_tier1_tier2(
         watchlist=rules.get("watchlist", []),
@@ -336,10 +481,14 @@ def monthly_job() -> None:
             continue
 
         eur_usd_rate = rules.get("eur_usd_rate", 1.0)
+        if not rules.get("paper_mode", True) and not _is_nyse_trading_hours():
+            print(f"[MONTHLY] {candidate.ticker}: market pre-open — MKT DAY order will queue for NYSE open 09:30 ET")
         try:
-            if not rules.get("paper_mode", True) and not _is_nyse_trading_hours():
-                print(f"[MONTHLY] {candidate.ticker}: market pre-open — MKT DAY order will queue for NYSE open 09:30 ET")
             result = broker.place_order(candidate.ticker, "buy", min_notional_usd)
+        except Exception as exc:
+            print(f"[MONTHLY] Order failed for {candidate.ticker}: {exc}")
+            continue
+        try:
             fees = compute_fees("buy", result.qty, min_notional_usd)
             db.record_trade(
                 ticker=result.ticker,
@@ -351,9 +500,14 @@ def monthly_job() -> None:
                 ibkr_order_id=result.order_id,
                 eur_usd_rate=eur_usd_rate,
             )
-
         except Exception as exc:
-            print(f"[MONTHLY] Order failed for {candidate.ticker}: {exc}")
+            # Order executed on broker but DB write failed — requires manual reconciliation.
+            import sys
+            print(
+                f"[CRITICAL] {candidate.ticker} order_id={result.order_id} executed but "
+                f"record_trade failed: {exc}  — reconcile manually!",
+                file=sys.stderr,
+            )
 
     # ── Save monthly forecast ─────────────────────────────────────────────────
     # Expected range: portfolio value × (1 + mean ± 1σ) using historical SPY monthly stats
@@ -473,9 +627,12 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     scheduler = BlockingScheduler(timezone="Europe/Madrid")
-    scheduler.add_job(weekly_job,        "cron", day_of_week="mon", hour=9,  minute=0,  misfire_grace_time=3600)
-    scheduler.add_job(monthly_job,       "cron", day_of_week="mon", hour=9,  minute=5,  misfire_grace_time=3600)
-    scheduler.add_job(cache_prewarm_job, "cron", day_of_week="sun", hour=22, minute=0,  misfire_grace_time=3600)
+    scheduler.add_job(weekly_job,        "cron", day_of_week="mon",     hour=9,  minute=0,  misfire_grace_time=3600)
+    scheduler.add_job(monthly_job,       "cron", day_of_week="mon",     hour=9,  minute=5,  misfire_grace_time=3600)
+    # Intraday stop-loss check: Mon–Fri, every hour 15:30–21:30 Madrid (= 09:30–15:30 ET).
+    # The job itself guards via _is_nyse_trading_hours() so it's a no-op outside session.
+    scheduler.add_job(intraday_job,      "cron", day_of_week="mon-fri", hour="15-21", minute=30, misfire_grace_time=300)
+    scheduler.add_job(cache_prewarm_job, "cron", day_of_week="sun",     hour=22, minute=0,  misfire_grace_time=3600)
     scheduler.add_job(
         nightly_backup_job, "cron", hour=3, minute=0,
         timezone="UTC", misfire_grace_time=1800,

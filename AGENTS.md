@@ -17,6 +17,7 @@
 Autonomous long-term investment bot (hold periods: months–years).
 Every Monday 09:00 Europe/Madrid it re-scores held positions and watchlist tickers.
 First Monday of the month it runs the full buy pipeline and sends a forecast.
+Every hour Mon–Fri during NYSE session (15:30–21:30 Madrid) it checks stop-loss intraday.
 
 **Not a day-trading bot.** Math decides. LLM analyses. Human controls `rules.yaml`.
 
@@ -29,7 +30,7 @@ WarBuf/
 ├── AGENTS.md          ← you are here; update on every substantial change
 ├── WarBuf.md          ← full project spec and strategy reference
 ├── rules.yaml         ← single control surface (no code edits needed for tuning)
-├── main.py            ← APScheduler entry point; weekly_job + monthly_job + nightly_backup_job + cache_prewarm_job
+├── main.py            ← APScheduler entry point; weekly_job + monthly_job + intraday_job + nightly_backup_job + cache_prewarm_job
 │                        Pure helpers: _detect_sell_trigger, _is_nyse_holiday, _is_nyse_trading_hours, _is_first_monday
 ├── db.py              ← SQLite persistence (5 tables, WAL mode, no ORM)
 ├── reporter.py        ← plain-text email reports (5-line weekly ping + monthly forecast)
@@ -38,29 +39,29 @@ WarBuf/
 ├── core/              ← pure functions only — zero I/O, fully testable without mocks
 │   ├── scorer.py      ← 4-factor composite math (the strategy heart)
 │   ├── fees.py        ← IBKR fee calculation (SEC + FINRA + commission)
-│   ├── market.py      ← yfinance wrapper + 24h file cache (.cache/)
+│   ├── market.py      ← yfinance wrapper + 24h file cache (.cache/); get_last_price + get_open_price (1h cache)
 │   ├── screener.py    ← Tier 1 hard filters + Tier 2 scoring pipeline
 │   ├── agent.py       ← LLM analysis layer (Tier 3); produces AnalysisReport per ticker
 │   └── llm_provider.py← LiteLLM wrapper; temperature=0.1 fixed
 │
 ├── broker/
 │   ├── base.py        ← BrokerInterface(ABC); swap broker = one new file
-│   ├── paper.py       ← paper trading; whole-share qty, 0.1% slippage, logs to SQLite, never touches real money
-│   └── ibkr.py        ← IBKR Web API via plain requests (no ib_insync — archived 2024)
+│   ├── paper.py       ← paper trading; whole-share qty, 0.1% slippage, Monday open price, logs to SQLite
+│   └── ibkr.py        ← IBKR Web API via plain requests; native GTC STP order after every buy; tickle retry
 │
-├── tests/             ← 231 tests; all external I/O mocked
+├── tests/             ← 254 tests; all external I/O mocked
 │   ├── test_scorer.py           ← 19 tests
 │   ├── test_fees.py             ← 15 tests
 │   ├── test_screener.py         ← 17 tests  (passes_hard_filters)
 │   ├── test_screener_pipeline.py← 6 tests   (run_tier1_tier2 end-to-end)
-│   ├── test_paper_broker.py     ← 9 tests
+│   ├── test_paper_broker.py     ← 14 tests  (incl. Monday open price)
 │   ├── test_agent.py            ← 42 tests (all LLM calls mocked; weekly + monthly + memory + rules_context)
 │   ├── test_db.py               ← 38 tests
-│   ├── test_market.py           ← 16 tests (yfinance mocked)
+│   ├── test_market.py           ← 19 tests (yfinance mocked; incl. get_open_price)
 │   ├── test_llm_provider.py     ← 9 tests
-│   ├── test_ibkr.py             ← 17 tests (requests.Session mocked)
+│   ├── test_ibkr.py             ← 20 tests (requests.Session mocked; incl. STP order + tickle retry)
 │   ├── test_reporter.py         ← 13 tests (smtplib mocked)
-│   └── test_main.py             ← 12 tests (_detect_sell_trigger pure function)
+│   └── test_main.py             ← 14 tests (_detect_sell_trigger + _is_nyse_* + intraday_job guards)
 │
 ├── Dockerfile         ← single-stage Python 3.12-slim image
 ├── docker-compose.yml ← warbuf + dashboard + caddy on one Hetzner CX23 instance
@@ -169,19 +170,37 @@ Checked at the start of every `monthly_job`.
 - 50% Satellite (≤5 stocks, ~10% each) — scored monthly
 - 10% Cash floor — never deploy below this
 
-### Sell Triggers (checked weekly — auto-executed)
+### Sell Triggers (checked **weekly** and **hourly intraday** — auto-executed)
 
-- **Stop-loss**: position down ≥ `stop_loss_pct` (15%) from cost basis → **full exit** (`place_order(ticker, "sell", qty × price)`)
-- **Score collapse**: composite score drops > `score_collapse_delta` (0.25) vs the previous week's decision → **50% trim** (`place_order(ticker, "sell", qty × price / 2)`)
+- **Stop-loss**: position down ≥ `stop_loss_pct` (15%) from cost basis → **full exit**
+  - Checked **hourly** Mon–Fri during NYSE session via `intraday_job` (price-only, no rescore)
+  - Also checked at weekly job start
+  - On live IBKR: a native GTC STP order is submitted at buy time so the stop executes
+    intraday even if the bot is offline between hourly checks
+- **Score collapse**: composite score drops > `score_collapse_delta` (0.25) vs the previous week → **50% trim**
+  - Checked **weekly only** — requires a full rescore, not just a price fetch
 
-Stop-loss takes priority over score collapse when both conditions fire simultaneously.
-Detection logic lives in `_detect_sell_trigger()` in `main.py` (pure function, no I/O — fully unit tested).
+Stop-loss takes priority over score collapse when both fire simultaneously.
+Detection logic lives in `_detect_sell_trigger()` in `main.py` (pure function, fully unit tested).
 
 ### Scheduler reliability
 
-All APScheduler jobs have `misfire_grace_time=3600` (1 h). If the Docker container restarts within
-an hour of a scheduled run, APScheduler fires the missed job immediately on restart instead of
-silently skipping it.
+All APScheduler jobs have `misfire_grace_time=3600` (1 h) except `intraday_job` (300 s — stale intraday data is useless).
+If the Docker container restarts within an hour of a scheduled run, APScheduler fires the missed job immediately on restart.
+
+`intraday_job` has an additional guard: `_is_nyse_trading_hours()` is checked at the very top of the
+function; if the container restarts outside market hours the misfired intraday job is a no-op.
+
+### Weekly opportunistic buy
+
+When `weekly_buy_threshold` is set in `rules.yaml` (commented out by default), `weekly_job` will buy
+the highest-scoring watchlist ticker above the threshold if:
+
+- Macro is risk-on
+- Satellite position count < `max_positions`
+- Deployable cash > `cash_floor_pct` + `min_position_eur`
+
+This enables mid-month entries without waiting for the monthly pipeline.
 
 Both `weekly_job` and `monthly_job` check `_is_nyse_holiday(date.today(), rules["nyse_holidays"])`
 at the top; if the date appears in the ISO-date list in `rules.yaml`, the job logs a notice and

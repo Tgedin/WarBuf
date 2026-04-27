@@ -7,11 +7,13 @@ Use this during the mandatory paper trading phase before going live.
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 import yfinance as yf
 
 from broker.base import BrokerInterface, OrderResult
 from core.fees import compute_fees
+from core.market import get_open_price
 from db import Database
 
 
@@ -34,8 +36,14 @@ class PaperBroker(BrokerInterface):
         if notional_usd <= 0:
             raise ValueError(f"notional_usd must be positive, got {notional_usd}")
 
-        price = self._last_close_price(ticker)
-        # Simulate bid-ask slippage: buys fill 0.1% above last close, sells 0.1% below.
+        # On Mondays use today's opening price (first 1m candle) to simulate
+        # the gap between Friday's close and Monday's NYSE open — the main
+        # source of slippage for a Monday-morning strategy.
+        is_monday = date.today().weekday() == 0
+        price = get_open_price(ticker) if is_monday else self._last_close_price(ticker)
+        if price is None:
+            price = self._last_close_price(ticker)
+        # Simulate bid-ask slippage: buys fill 0.1% above reference price, sells 0.1% below.
         # IBKR MKT orders on liquid US equities typically cost 0.05-0.15% vs mid.
         SLIPPAGE = 0.001
         fill_price = price * (1 + SLIPPAGE) if side == "buy" else price * (1 - SLIPPAGE)
@@ -80,3 +88,4 @@ class PaperBroker(BrokerInterface):
         if hist.empty:
             raise RuntimeError(f"Cannot fetch price for {ticker}")
         return float(hist["Close"].iloc[-1])
+
