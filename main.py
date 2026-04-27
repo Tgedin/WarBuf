@@ -250,6 +250,34 @@ def monthly_job() -> None:
         db.close()
         return
 
+    # ── Buy core ETFs if not yet held ─────────────────────────────────────────
+    eur_usd_rate = rules.get("eur_usd_rate", 1.0)
+    positions    = db.get_positions()
+    cash_eur     = db.get_cash_eur()
+    total_eur    = cash_eur + sum(
+        p["avg_cost_basis_eur"] * p["qty"] for p in positions.values()
+    )
+    for etf, target_frac in rules.get("core_etfs", {}).items():
+        if etf in positions:
+            continue  # already held — never rebalance core ETFs
+        notional_usd = total_eur * target_frac * eur_usd_rate
+        try:
+            result = broker.place_order(etf, "buy", notional_usd)
+            fees   = compute_fees("buy", result.qty, notional_usd)
+            db.record_trade(
+                ticker=result.ticker,
+                side="buy",
+                qty=result.qty,
+                price_usd=result.filled_price_usd,
+                fees_usd=fees.total_usd,
+                net_cost_basis=notional_usd + fees.total_usd,
+                ibkr_order_id=result.order_id,
+                eur_usd_rate=eur_usd_rate,
+            )
+            print(f"[MONTHLY] Core ETF bought: {etf}  {result.qty:.4f} shares @ ${result.filled_price_usd:.2f}  (€{notional_usd/eur_usd_rate:.0f})")
+        except Exception as exc:
+            print(f"[MONTHLY] Core ETF order failed for {etf}: {exc}")
+
     top5, rejected = run_tier1_tier2(
         watchlist=rules.get("watchlist", []),
         filters=_make_filters(rules),
@@ -326,6 +354,25 @@ def monthly_job() -> None:
 
         except Exception as exc:
             print(f"[MONTHLY] Order failed for {candidate.ticker}: {exc}")
+
+    # ── Save monthly forecast ─────────────────────────────────────────────────
+    # Expected range: portfolio value × (1 + mean ± 1σ) using historical SPY monthly stats
+    # SPY 1-month: mean +0.9%, stdev ~4.5%  (Dimson-Marsh-Staunton long-run data)
+    MONTHLY_MEAN = 0.009
+    MONTHLY_STD  = 0.045
+    positions_now = db.get_positions()
+    cash_now      = db.get_cash_eur()
+    total_now_eur = cash_now + sum(
+        p["avg_cost_basis_eur"] * p["qty"] for p in positions_now.values()
+    )
+    month_str = date.today().strftime("%Y-%m")
+    db.save_forecast(
+        month=month_str,
+        expected_low=round(total_now_eur * (1 + MONTHLY_MEAN - MONTHLY_STD), 2),
+        expected_high=round(total_now_eur * (1 + MONTHLY_MEAN + MONTHLY_STD), 2),
+        notes=f"Portfolio EUR {total_now_eur:.0f} at entry; SPY mean+/-1sd range",
+    )
+    print(f"[MONTHLY] Forecast saved for {month_str}: EUR {total_now_eur*(1+MONTHLY_MEAN-MONTHLY_STD):.0f}–{total_now_eur*(1+MONTHLY_MEAN+MONTHLY_STD):.0f}")
 
     db.close()
     print("[MONTHLY] Done.")
