@@ -31,7 +31,6 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 
 from broker.ibkr import IBKRBroker
-from broker.paper import PaperBroker
 from core.agent import analyse_candidates, analyse_weekly
 from core.fees import compute_fees
 from core.market import get_last_price, get_news_headlines, get_spy_sma, is_risk_on
@@ -56,8 +55,6 @@ def _load_rules() -> dict:
 
 
 def _make_broker(rules: dict, db: Database):
-    if rules.get("paper_mode", True):
-        return PaperBroker(db, eur_usd_rate=rules.get("eur_usd_rate", 1.0))
     return IBKRBroker(stop_loss_pct=rules.get("stop_loss_pct", 15.0))
 
 
@@ -481,7 +478,7 @@ def monthly_job() -> None:
             continue
 
         eur_usd_rate = rules.get("eur_usd_rate", 1.0)
-        if not rules.get("paper_mode", True) and not _is_nyse_trading_hours():
+        if not _is_nyse_trading_hours():
             print(f"[MONTHLY] {candidate.ticker}: market pre-open — MKT DAY order will queue for NYSE open 09:30 ET")
         try:
             result = broker.place_order(candidate.ticker, "buy", min_notional_usd)

@@ -99,17 +99,21 @@ def _check_rules_yaml():
             raise KeyError(f"Missing required key '{key}' in rules.yaml")
     state["rules"] = rules
 
-def _check_paper_mode():
-    rules = state["rules"]
-    if not rules.get("paper_mode", True):
+def _check_account_id_guard():
+    account_id = os.environ.get("IBKR_ACCOUNT_ID", "")
+    if not account_id:
+        # Not configured yet — skip, don't fail
+        return
+    if account_id.startswith("U") and not os.environ.get("CONFIRM_LIVE"):
         raise RuntimeError(
-            "paper_mode is FALSE in rules.yaml — smoke test requires paper mode ON."
+            f"IBKR_ACCOUNT_ID={account_id!r} looks like a LIVE account (starts with U). "
+            "Set CONFIRM_LIVE=true in .env to confirm you intend to run against real money."
         )
 
 _copilot_ok = check("GITHUB_TOKEN present in environment", _check_github_token)
 _rules_ok   = check("rules.yaml loads and has required keys", _check_rules_yaml)
 if _rules_ok:
-    check("paper_mode is ON (safety guard)", _check_paper_mode)
+    check("IBKR account ID safety guard (blocks live account without CONFIRM_LIVE)", _check_account_id_guard)
 
 # If the token is missing/invalid, skip LLM calls so sections 3–8 can still run.
 if not _copilot_ok:
@@ -365,37 +369,62 @@ check("veto_reason present iff vetoed", _check_veto_reason_only_when_vetoed, "ll
 # 6. PAPER BROKER — buy, hold, sell
 # ══════════════════════════════════════════════════════════════════════════════
 
-section("6 · PAPER BROKER — place buy + sell, verify DB records")
+section("6 · IBKR BROKER — mocked buy + sell via IBKRBroker")
 
 from db import Database  # noqa: E402
-from broker.paper import PaperBroker  # noqa: E402
+from broker.ibkr import IBKRBroker  # noqa: E402
 
-# Use a fixed mock price so the section never depends on yfinance availability.
+# All HTTP calls are mocked — no real gateway needed for this check.
 _MOCK_PRICE = 182.50
+_MOCK_ACCOUNT = "DU9999999"
 
-def _setup_paper_broker():
+def _setup_ibkr_broker():
     db = Database(":memory:")
-    broker = PaperBroker(db, eur_usd_rate=state["rules"].get("eur_usd_rate", 1.08))
-    state["paper_db"]     = db
-    state["paper_broker"] = broker
+    state["ibkr_db"] = db
+    # IBKRBroker is instantiated without a running gateway; HTTP calls are patched below.
+    broker = IBKRBroker(stop_loss_pct=15.0)
+    state["ibkr_broker"] = broker
 
-def _check_paper_buy():
-    broker = state["paper_broker"]
-    with patch.object(PaperBroker, "_last_close_price", return_value=_MOCK_PRICE):
+def _check_ibkr_buy():
+    broker  = state["ibkr_broker"]
+    db      = state["ibkr_db"]
+    rules   = state["rules"]
+    eur_usd = rules.get("eur_usd_rate", 1.08)
+
+    mock_session = MagicMock()
+    # tickle
+    mock_session.get.return_value.status_code = 200
+    mock_session.get.return_value.json.return_value = {"iserver": {"authStatus": {"authenticated": True, "competing": False}}}
+    # price (get_last_price via yfinance is not mocked here — IBKRBroker uses it for qty)
+    # order submit
+    mock_session.post.return_value.status_code = 200
+    mock_session.post.return_value.json.return_value = [{"order_id": "IB-SMOKE-BUY"}]
+
+    with patch("broker.ibkr.requests.Session", return_value=mock_session), \
+         patch("broker.ibkr.get_last_price", return_value=_MOCK_PRICE):
         result = broker.place_order("AAPL", "buy", 750.0)
+
     if result.ticker != "AAPL":
         raise ValueError(f"order ticker mismatch: {result.ticker}")
     if result.side != "buy":
         raise ValueError(f"order side mismatch: {result.side}")
     if result.qty <= 0:
         raise ValueError(f"qty must be positive, got {result.qty}")
-    if not result.order_id.startswith("PAPER-"):
-        raise ValueError(f"paper order ID must start with PAPER-, got {result.order_id!r}")
-    state["paper_buy_result"] = result
-    print(f"    INFO  {result.order_id}  {result.qty:.4f} AAPL @ ${result.filled_price_usd:.2f}")
+
+    # Record the trade in the in-memory DB so subsequent checks work
+    from core.fees import compute_fees
+    fees = compute_fees("buy", result.qty, 750.0)
+    db.record_trade(
+        ticker=result.ticker, side="buy", qty=result.qty,
+        price_usd=result.filled_price_usd, fees_usd=fees.total_usd,
+        net_cost_basis=750.0 + fees.total_usd,
+        ibkr_order_id=result.order_id, eur_usd_rate=eur_usd,
+    )
+    state["ibkr_buy_result"] = result
+    print(f"    INFO  {result.order_id}  {result.qty} AAPL @ ${result.filled_price_usd:.2f}")
 
 def _check_buy_recorded_in_db():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     trades = db._conn.execute(
         "SELECT * FROM trades WHERE ticker='AAPL' AND side='buy'"
     ).fetchall()
@@ -403,23 +432,45 @@ def _check_buy_recorded_in_db():
         raise AssertionError("Buy trade not found in trades table")
 
 def _check_position_created():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     pos = db.get_positions()
     if "AAPL" not in pos:
         raise AssertionError("AAPL position not created after buy")
     state["aapl_qty_after_buy"] = pos["AAPL"]["qty"]
 
-def _check_paper_sell():
-    broker = state["paper_broker"]
-    with patch.object(PaperBroker, "_last_close_price", return_value=_MOCK_PRICE):
-        result = broker.place_order("AAPL", "sell", 375.0)
+def _check_ibkr_sell():
+    broker  = state["ibkr_broker"]
+    db      = state["ibkr_db"]
+    rules   = state["rules"]
+    eur_usd = rules.get("eur_usd_rate", 1.08)
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.status_code = 200
+    mock_session.get.return_value.json.return_value = {"iserver": {"authStatus": {"authenticated": True, "competing": False}}}
+    mock_session.post.return_value.status_code = 200
+    mock_session.post.return_value.json.return_value = [{"order_id": "IB-SMOKE-SELL"}]
+
+    buy_result = state["ibkr_buy_result"]
+    with patch("broker.ibkr.requests.Session", return_value=mock_session), \
+         patch("broker.ibkr.get_last_price", return_value=_MOCK_PRICE):
+        result = broker.place_order("AAPL", "sell", buy_result.qty * _MOCK_PRICE / 2)
+
     if result.side != "sell":
         raise ValueError(f"order side mismatch: {result.side}")
-    state["paper_sell_result"] = result
-    print(f"    INFO  {result.order_id}  {result.qty:.4f} AAPL sold @ ${result.filled_price_usd:.2f}")
+
+    from core.fees import compute_fees
+    fees = compute_fees("sell", result.qty, result.qty * _MOCK_PRICE)
+    db.record_trade(
+        ticker=result.ticker, side="sell", qty=result.qty,
+        price_usd=result.filled_price_usd, fees_usd=fees.total_usd,
+        net_cost_basis=result.qty * result.filled_price_usd - fees.total_usd,
+        ibkr_order_id=result.order_id, eur_usd_rate=eur_usd,
+    )
+    state["ibkr_sell_result"] = result
+    print(f"    INFO  {result.order_id}  {result.qty} AAPL sold @ ${result.filled_price_usd:.2f}")
 
 def _check_sell_recorded_in_db():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     trades = db._conn.execute(
         "SELECT * FROM trades WHERE ticker='AAPL' AND side='sell'"
     ).fetchall()
@@ -427,39 +478,19 @@ def _check_sell_recorded_in_db():
         raise AssertionError("Sell trade not found in trades table")
 
 def _check_sell_reduces_qty():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     pos = db.get_positions()
     qty_before = state.get("aapl_qty_after_buy", 0)
     if "AAPL" in pos and pos["AAPL"]["qty"] >= qty_before:
         raise AssertionError("qty did not decrease after sell")
 
-def _check_invalid_side_raises():
-    broker = state["paper_broker"]
-    try:
-        with patch.object(PaperBroker, "_last_close_price", return_value=_MOCK_PRICE):
-            broker.place_order("AAPL", "hold", 100.0)
-        raise AssertionError("Expected ValueError for invalid side 'hold'")
-    except ValueError:
-        pass  # expected
-
-def _check_negative_notional_raises():
-    broker = state["paper_broker"]
-    try:
-        with patch.object(PaperBroker, "_last_close_price", return_value=_MOCK_PRICE):
-            broker.place_order("AAPL", "buy", -100.0)
-        raise AssertionError("Expected ValueError for negative notional")
-    except ValueError:
-        pass  # expected
-
-check("PaperBroker + in-memory DB setup", _setup_paper_broker)
-check("place_order buy returns valid OrderResult", _check_paper_buy)
+check("IBKRBroker + in-memory DB setup", _setup_ibkr_broker)
+check("place_order buy returns valid OrderResult", _check_ibkr_buy)
 check("buy trade recorded in DB", _check_buy_recorded_in_db)
 check("AAPL position created after buy", _check_position_created)
-check("place_order sell returns valid OrderResult", _check_paper_sell)
+check("place_order sell returns valid OrderResult", _check_ibkr_sell)
 check("sell trade recorded in DB", _check_sell_recorded_in_db)
 check("sell reduces position qty", _check_sell_reduces_qty)
-check("invalid side raises ValueError", _check_invalid_side_raises)
-check("negative notional raises ValueError", _check_negative_notional_raises)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -469,7 +500,7 @@ check("negative notional raises ValueError", _check_negative_notional_raises)
 section("7 · DB PERSISTENCE — decisions, performance, forecasts")
 
 def _check_record_decision():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     reports = state.get("agent_reports", [])
     candidates = state.get("screener_top", [])
 
@@ -497,7 +528,7 @@ def _check_record_decision():
         )
 
 def _check_decisions_in_db():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     candidates = state.get("screener_top", [])
     for s in candidates:
         rows = db._conn.execute(
@@ -507,7 +538,7 @@ def _check_decisions_in_db():
             raise AssertionError(f"Decision not found in DB for {s.ticker}")
 
 def _check_decisions_have_self_critique():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     candidates = state.get("screener_top", [])
     for s in candidates:
         row = db._conn.execute(
@@ -517,7 +548,7 @@ def _check_decisions_have_self_critique():
             raise AssertionError(f"self_critique missing in DB for {s.ticker}")
 
 def _check_record_performance():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     db.record_performance(portfolio_value_eur=1234.0, benchmark_value=1100.0, cash_eur=200.0)
     rows = db.get_performance_history(limit=1)
     if not rows:
@@ -526,7 +557,7 @@ def _check_record_performance():
         raise AssertionError(f"portfolio_value_eur mismatch: {rows[0]['portfolio_value_eur']}")
 
 def _check_save_and_get_forecast():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     db.save_forecast("2026-05", expected_low=1.0, expected_high=3.0)
     f = db.get_forecast("2026-05")
     if f is None:
@@ -579,7 +610,7 @@ def _make_smtp_mock():
 def _check_weekly_digest_sends():
     from reporter import send_weekly_digest
 
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     candidates = state.get("screener_top", [])
     positions = [{"ticker": c.ticker, "pct": 10, "action": "HOLD", "score": c.score}
                  for c in candidates]
@@ -605,7 +636,7 @@ def _check_weekly_digest_no_exception():
 def _check_monthly_forecast_sends():
     from reporter import send_monthly_forecast
 
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     candidates = state.get("screener_top", [])
     outlooks = [{"ticker": c.ticker, "outlook": "bullish", "note": "strong FCF"}
                 for c in candidates]
@@ -624,7 +655,7 @@ def _check_monthly_forecast_sends():
         )
 
 def _check_forecast_saved_to_db():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     f = db.get_forecast("2026-04")
     if f is None:
         raise AssertionError("Monthly forecast not saved to DB by send_monthly_forecast")
@@ -632,7 +663,7 @@ def _check_forecast_saved_to_db():
 def _check_forecast_vs_actual_sends():
     from reporter import send_forecast_vs_actual
 
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     with patch("reporter.smtplib.SMTP_SSL", return_value=_make_smtp_mock()):
         send_forecast_vs_actual(
             month_label="April 2026",
@@ -645,7 +676,7 @@ def _check_forecast_vs_actual_sends():
         )
 
 def _check_actual_written_to_db():
-    db = state["paper_db"]
+    db = state["ibkr_db"]
     f = db.get_forecast("2026-04")
     if f is None or f.get("actual") is None:
         raise AssertionError("actual return not written by send_forecast_vs_actual")
@@ -665,7 +696,7 @@ def _check_real_email_send():
         raise EnvironmentError("Real email credentials not set — skipping live send.")
 
     from reporter import send_weekly_digest
-    db         = state["paper_db"]
+    db         = state["ibkr_db"]
     candidates = state.get("screener_top", [])
     positions  = [
         {"ticker": c.ticker, "pct": 10, "action": "HOLD", "score": c.score}

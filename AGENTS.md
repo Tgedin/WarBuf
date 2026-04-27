@@ -3,8 +3,8 @@
 **Repository**: https://github.com/Tgedin/WarBuf
 
 > **Primary reference**: Read `GOAL.md` first. Every change you make must serve the goal
-> defined there — paper trading that faithfully simulates real IBKR execution so that
-> the June 4 go-live decision is based on real data.
+> defined there — a full month of IBKR paper account trading (May 4 → June 4) so that
+> the June 4 go-live decision is based on real operational data, not simulation.
 
 > **Maintenance rule**: Update this file for every substantial modification to the codebase —
 > new modules, changed architecture, altered strategy parameters, added dependencies,
@@ -46,15 +46,14 @@ WarBuf/
 │
 ├── broker/
 │   ├── base.py        ← BrokerInterface(ABC); swap broker = one new file
-│   ├── paper.py       ← paper trading; whole-share qty, 0.1% slippage, Monday open price, logs to SQLite
 │   └── ibkr.py        ← IBKR Web API via plain requests; native GTC STP order after every buy; tickle retry
+│                        Paper phase = DU... account ID; live = U... account ID — same code, different .env
 │
-├── tests/             ← 254 tests; all external I/O mocked
+├── tests/             ← 240 tests; all external I/O mocked
 │   ├── test_scorer.py           ← 19 tests
 │   ├── test_fees.py             ← 15 tests
 │   ├── test_screener.py         ← 17 tests  (passes_hard_filters)
 │   ├── test_screener_pipeline.py← 6 tests   (run_tier1_tier2 end-to-end)
-│   ├── test_paper_broker.py     ← 14 tests  (incl. Monday open price)
 │   ├── test_agent.py            ← 42 tests (all LLM calls mocked; weekly + monthly + memory + rules_context)
 │   ├── test_db.py               ← 38 tests
 │   ├── test_market.py           ← 19 tests (yfinance mocked; incl. get_open_price)
@@ -86,8 +85,11 @@ Side effects (DB writes, HTTP calls, email) live only in `main.py`, `db.py`,
 ### One control surface
 
 `rules.yaml` is the only file the user ever edits. Every tunable parameter —
-factor weights, filters, model name, paper mode — lives there.
+factor weights, filters, model name — lives there.
 `main.py` loads it fresh on every job run so changes take effect without restart.
+
+Paper vs live is **not** a code or `rules.yaml` change. It is purely the `IBKR_ACCOUNT_ID`
+value in `.env`: `DU...` = paper account (virtual money), `U...` = live account (real money).
 
 ### Broker is swappable
 
@@ -100,11 +102,13 @@ that interface. No other code changes.
 If `call_llm` raises, `analyse_candidates` returns neutral `AnalysisReport` objects
 (not vetoed, confidence=low). The math score governs. The system never blocks on LLM.
 
-### `paper_mode: true` is the safety lock
+### IBKR account ID is the safety lock
 
-`broker/paper.py` generates `PAPER-{uuid8}` order IDs and logs to SQLite.
-No order reaches IBKR unless `paper_mode: false` in `rules.yaml` AND
-`IBKRBroker` is instantiated. Both conditions must be true simultaneously.
+The bot always uses `IBKRBroker`. The account used depends on `IBKR_ACCOUNT_ID` in `.env`:
+- `DU...` prefix = IBKR paper account — real gateway, virtual money, zero financial risk
+- `U...` prefix = IBKR live account — real money; `smoke_test.py` blocks this without `CONFIRM_LIVE=true`
+
+Go-live on June 4 = change one line in `.env`. No code changes, no `rules.yaml` changes.
 
 ### Dashboard is the primary reporting surface
 
@@ -206,7 +210,7 @@ Both `weekly_job` and `monthly_job` check `_is_nyse_holiday(date.today(), rules[
 at the top; if the date appears in the ISO-date list in `rules.yaml`, the job logs a notice and
 returns immediately. Update `nyse_holidays` each December.
 
-When `paper_mode: false` and the monthly order fires before NYSE open (09:00 Madrid ≈ 03:00 ET),
+When the monthly order fires before NYSE open (09:00 Madrid ≈ 03:00 ET),
 `_is_nyse_trading_hours()` detects the pre-open window and logs a warning.
 The MKT DAY order still submits — IBKR queues it for execution at the 09:30 ET open bell.
 
@@ -266,7 +270,6 @@ so that reports reflect what the investor actually spent.
 
 1. `rules.yaml` — `eur_usd_rate: 1.08` (update manually when rate drifts materially)
 2. `main.py` — reads `eur_usd_rate` from rules and passes it to:
-   - `PaperBroker(db, eur_usd_rate=…)` — so paper trades record EUR cost
    - `db.record_trade(…, eur_usd_rate=…)` — stores `price_eur` + `eur_usd_rate`
    - `send_weekly_digest(…, eur_usd_rate=…)` for the header line
 3. `db._update_position()` — computes and persists `avg_cost_basis_eur` and `total_fees_eur`
@@ -495,6 +498,37 @@ Required `.env` keys:
 > Any change that makes paper execution less realistic (fractional shares, no slippage,
 > ignoring fees, bypassing the cash floor) directly undermines the project goal.
 
+### Critical thinking — reassess project assumptions periodically
+
+At major milestones and whenever the user asks about direction, step back and challenge the
+project-level assumptions. This is distinct from the strategy critique that `core/agent.py`
+does on tickers — this is about whether the **system design and plan** are still correct.
+
+**Questions to raise (pick the 1–2 most relevant to the current conversation):**
+
+| Assumption | Challenge |
+|---|---|
+| IBKR paper account → live on June 4 | Has anything critical failed or been discovered during the paper phase that warrants delaying go-live? |
+| June 4 is the right timeline | Is 30 days enough operational validation? Too long? Are there upcoming market events (Fed meeting, earnings season) that should shift the date? |
+| €3,000 starting capital | Are fees eating too large a fraction of each ~€300 position? Would €5,000 or €10,000 change the strategy meaningfully? |
+| 5 satellite stocks at ~€300 each | Is whole-share rounding creating poor coverage for high-price stocks (e.g. NVDA > €800)? Should position sizing be percentage-based rather than fixed notional? |
+| Weekly rescore + monthly buy cadence | Is the bot firing at all? Zero signals for multiple months may indicate the watchlist or filters are too restrictive. |
+| 4-factor weights (35/25/25/15) | Has `algorithm_feedback` in decisions consistently flagged one factor as noisy or miscalibrated? If yes, challenge the weight. |
+| Stop-loss at 15% | At ~€300 per position, 15% = €45 max loss. Is that the right floor given position size and strategy horizon? |
+| SPY + QQQ as core ETFs | Are macro conditions (yield curve, VIX spike, rate regime) that would make this allocation wrong? |
+| LLM veto is net positive | Are vetoes blocking legitimate candidates? Are they too permissive (missing real risks)? Review veto rate vs subsequent price moves. |
+| The dashboard surfaces the right information | After a few weeks of real data, is anything missing that would change a weekly decision? |
+
+**When to raise these:**
+- When the user asks "what should we do next?" or "is this still the right approach?"
+- At each milestone: May 4 first trade, June 4 go-live decision, 3-month live review
+- When test results, live data, or dashboard observations contradict an assumption
+
+**How:** One sentence per relevant assumption. Not a lecture — a flag. Example:
+*"Before implementing X: with the bot running for 3 weeks, is the 15% stop-loss still the right threshold given the positions we're holding?"*
+
+Do not raise all questions at once. Pick the 1–2 most relevant. Then implement what was asked.
+
 ### Implementation discipline
 
 - Implement only what was asked. Do not add features, refactor unrelated code, or make
@@ -554,7 +588,7 @@ Skip task tracking for single, trivial operations.
 | Item                       | Notes                                                                                                                                                           |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | IBKR gateway Docker image  | Use `ghcr.io/extrange/ibkr-cp-gateway` or official IBKR image; needs manual login first                                                                         |
-| Live trading               | Set `paper_mode: false` only after 30+ paper days and ~€3,000 capital; see Live Trading Readiness sidebar in dashboard                                          |
+| Live trading               | Change `IBKR_ACCOUNT_ID` in `.env` from `DU...` (paper) to `U...` (live) on June 4; set `CONFIRM_LIVE=true` to pass the smoke test guard |
 | Watchlist curation         | Review quarterly; currently 30 tickers in `rules.yaml`                                                                                                          |
 | Nightly backup destination | `nightly_backup_job` writes to `./backups/` by default; set `BACKUP_DIR` env var to point to an external volume or Backblaze B2 mount for off-server durability |
 | NYSE holidays (annual)     | Update `nyse_holidays` list in `rules.yaml` each December for the coming year                                                                                   |

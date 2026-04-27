@@ -28,7 +28,7 @@ from core.fees import compute_fees  # noqa: E402
 from core.market import get_news_headlines, is_risk_on  # noqa: E402
 from core.scorer import FactorWeights  # noqa: E402
 from core.screener import HardFilters, run_tier1_tier2  # noqa: E402
-from broker.paper import PaperBroker  # noqa: E402
+from broker.ibkr import IBKRBroker  # noqa: E402
 from db import Database, rules_hash  # noqa: E402
 from reporter import send_monthly_forecast  # noqa: E402
 
@@ -41,7 +41,7 @@ def main() -> None:
         rules = yaml.safe_load(f)
 
     db     = Database(DB_PATH)
-    broker = PaperBroker(db, eur_usd_rate=rules.get("eur_usd_rate", 1.08))
+    broker = IBKRBroker(stop_loss_pct=rules.get("stop_loss_pct", 15.0))
     rhash  = rules_hash(RULES_PATH)
 
     filters = HardFilters(

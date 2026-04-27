@@ -39,7 +39,9 @@ score_collapse_delta: 0.25 # trim 50% if score drops this much in one week
 
 # Execution
 broker: ibkr
-paper_mode: true # ALWAYS start true; set false only after 30+ days paper trading
+# paper vs live: change IBKR_ACCOUNT_ID in .env
+#   DU...  = IBKR paper account (virtual money, real gateway)
+#   U...   = IBKR live account  (real money — go-live June 4)
 
 # LLM configuration
 #
