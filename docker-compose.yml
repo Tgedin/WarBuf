@@ -44,6 +44,18 @@ services:
     networks:
       - warbuf_net
 
+  # ── IBKR Client Portal Gateway ────────────────────────────────────────────
+  ibkr-gateway:
+    image: ghcr.io/extrange/ibkr-cp-gateway:latest
+    restart: unless-stopped
+    environment:
+      IB_USERNAME: ${IB_USERNAME}
+      IB_PASSWORD: ${IB_PASSWORD}
+    ports:
+      - "5000:5000"
+    networks:
+      - warbuf_net
+
   # ── WarBuf ─────────────────────────────────────────────────────────────────
   warbuf:
     build:
@@ -57,6 +69,8 @@ services:
       - warbuf_cache:/app/.cache
     networks:
       - warbuf_net
+    depends_on:
+      - ibkr-gateway
 
 volumes:
   warbuf_data:
