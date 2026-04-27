@@ -38,7 +38,7 @@ services:
     environment:
       PORTFOLIO_DB_PATH: /app/data/portfolio.db
     volumes:
-      - warbuf_data:/app/data:ro
+      - warbuf_data:/app/data
     ports:
       - "8501:8501"
     networks:
