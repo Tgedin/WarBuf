@@ -523,13 +523,13 @@ Skip task tracking for single, trivial operations.
 
 ## What Is Not Yet Done
 
-| Item                       | Notes                                                                                                                                                             |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| IBKR gateway Docker image  | Use `ghcr.io/extrange/ibkr-cp-gateway` or official IBKR image; needs manual login first                                                                           |
-| Live trading               | Set `paper_mode: false` only after 30+ paper days and ~€3,000 capital; see Live Trading Readiness sidebar in dashboard |
-| Watchlist curation         | Review quarterly; currently 30 tickers in `rules.yaml`                                                                                                            |
-| Nightly backup destination | `nightly_backup_job` writes to `./backups/` by default; set `BACKUP_DIR` env var to point to an external volume or Backblaze B2 mount for off-server durability   |
-| NYSE holidays (annual)     | Update `nyse_holidays` list in `rules.yaml` each December for the coming year                                                                                     |
+| Item                       | Notes                                                                                                                                                           |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| IBKR gateway Docker image  | Use `ghcr.io/extrange/ibkr-cp-gateway` or official IBKR image; needs manual login first                                                                         |
+| Live trading               | Set `paper_mode: false` only after 30+ paper days and ~€3,000 capital; see Live Trading Readiness sidebar in dashboard                                          |
+| Watchlist curation         | Review quarterly; currently 30 tickers in `rules.yaml`                                                                                                          |
+| Nightly backup destination | `nightly_backup_job` writes to `./backups/` by default; set `BACKUP_DIR` env var to point to an external volume or Backblaze B2 mount for off-server durability |
+| NYSE holidays (annual)     | Update `nyse_holidays` list in `rules.yaml` each December for the coming year                                                                                   |
 
 ---
 

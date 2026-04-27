@@ -77,6 +77,14 @@ def _get_eur_usd_rate() -> float:
     return 1.08
 
 
+def _get_cash_eur() -> float | None:
+    """Read live cash balance from portfolio_cash singleton row."""
+    df = _query("SELECT balance_eur FROM portfolio_cash WHERE id = 1")
+    if df.empty or df["balance_eur"].isna().all():
+        return None
+    return float(df["balance_eur"].iloc[0])
+
+
 @st.cache_data(ttl=3600)
 def _get_current_prices_eur(tickers: tuple[str, ...], eur_usd_rate: float) -> dict[str, float | None]:
     """Fetch current USD prices for held tickers and convert to EUR. 1h cache."""
@@ -186,19 +194,21 @@ if page == "Portfolio":
                 c4.metric("Current value", "—")
             st.divider()
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total cost basis", f"€{total_cost:,.2f}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total cost basis", f"\u20ac{total_cost:,.2f}")
         if total_value > 0:
             total_gain     = total_value - total_cost
             total_gain_pct = total_gain / total_cost * 100 if total_cost else 0.0
             c2.metric(
                 "Total live value",
-                f"€{total_value:,.2f}",
-                delta=f"€{total_gain:+,.2f} ({total_gain_pct:+.1f}%)",
+                f"\u20ac{total_value:,.2f}",
+                delta=f"\u20ac{total_gain:+,.2f} ({total_gain_pct:+.1f}%)",
             )
         else:
-            c2.metric("Total live value", "—")
-        c3.metric("EUR/USD rate", f"{eur_usd:.4f}")
+            c2.metric("Total live value", "\u2014")
+        cash_eur = _get_cash_eur()
+        c3.metric("Cash", f"\u20ac{cash_eur:,.2f}" if cash_eur is not None else "\u2014")
+        c4.metric("EUR/USD rate", f"{eur_usd:.4f}")
 
 # ── Weekly Report ─────────────────────────────────────────────────────────────
 

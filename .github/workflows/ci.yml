@@ -55,5 +55,6 @@ jobs:
           key: ${{ secrets.HETZNER_SSH_KEY }}
           script: |
             cd /root/WarBuf
-            git pull origin main
+            git fetch origin
+            git reset --hard origin/main
             docker compose up -d --build

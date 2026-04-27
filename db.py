@@ -77,6 +77,13 @@ _SCHEMA = [
         notes            TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS portfolio_cash (
+        id          INTEGER PRIMARY KEY CHECK (id = 1),
+        balance_eur REAL    NOT NULL DEFAULT 0.0,
+        updated     TEXT    NOT NULL
+    )
+    """,
 ]
 
 
@@ -90,6 +97,10 @@ class Database:
     def _apply_schema(self) -> None:
         for stmt in _SCHEMA:
             self._conn.execute(stmt)
+        # Ensure the cash singleton row always exists (idempotent)
+        self._conn.execute(
+            "INSERT OR IGNORE INTO portfolio_cash (id, balance_eur, updated) VALUES (1, 0.0, 'init')"
+        )
         self._conn.commit()
         self._apply_migrations()
 
@@ -187,6 +198,10 @@ class Database:
             (ticker, side, qty, price_usd, price_eur, fees_usd,
              net_cost_basis, ibkr_order_id, _today(), eur_usd_rate),
         )
+        # Cash accounting: buy debits net cost, sell credits net proceeds
+        net_cost_basis_eur = net_cost_basis / eur_usd_rate
+        delta_eur = -net_cost_basis_eur if side == "buy" else +net_cost_basis_eur
+        self.adjust_cash(delta_eur)
         self._update_position(ticker, side, qty, price_usd, fees_usd, eur_usd_rate)
         self._conn.commit()
 
@@ -250,6 +265,33 @@ class Database:
                 )
 
     # ── Positions ─────────────────────────────────────────────────────────────
+
+    # ── Cash ──────────────────────────────────────────────────────────────────
+
+    def seed_cash(self, amount_eur: float) -> None:
+        """Set the paper cash balance. Call once to initialise; safe to call again."""
+        if amount_eur < 0:
+            raise ValueError(f"amount_eur must be non-negative, got {amount_eur}")
+        self._conn.execute(
+            "UPDATE portfolio_cash SET balance_eur = ?, updated = ? WHERE id = 1",
+            (amount_eur, _today()),
+        )
+        self._conn.commit()
+
+    def get_cash_eur(self) -> float:
+        """Return current paper cash balance in EUR."""
+        row = self._conn.execute(
+            "SELECT balance_eur FROM portfolio_cash WHERE id = 1"
+        ).fetchone()
+        return float(row["balance_eur"]) if row else 0.0
+
+    def adjust_cash(self, delta_eur: float) -> None:
+        """Add or subtract *delta_eur* from cash. Silently floors at 0 (paper trading)."""
+        self._conn.execute(
+            "UPDATE portfolio_cash SET balance_eur = MAX(0.0, balance_eur + ?), updated = ? WHERE id = 1",
+            (delta_eur, _today()),
+        )
+        self._conn.commit()
 
     def get_positions(self) -> dict[str, dict]:
         rows = self._conn.execute("SELECT * FROM positions").fetchall()

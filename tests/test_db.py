@@ -230,6 +230,69 @@ def test_rules_hash_is_16_chars(tmp_path):
     assert len(rules_hash(f)) == 16
 
 
+# ── portfolio_cash ────────────────────────────────────────────────────────────
+
+def test_get_cash_eur_returns_zero_on_fresh_db(db):
+    assert db.get_cash_eur() == pytest.approx(0.0)
+
+
+def test_seed_cash_sets_balance(db):
+    db.seed_cash(3000.0)
+    assert db.get_cash_eur() == pytest.approx(3000.0)
+
+
+def test_seed_cash_can_be_called_again(db):
+    db.seed_cash(3000.0)
+    db.seed_cash(5000.0)
+    assert db.get_cash_eur() == pytest.approx(5000.0)
+
+
+def test_seed_cash_raises_on_negative(db):
+    with pytest.raises(ValueError):
+        db.seed_cash(-100.0)
+
+
+def test_adjust_cash_adds(db):
+    db.seed_cash(1000.0)
+    db.adjust_cash(500.0)
+    assert db.get_cash_eur() == pytest.approx(1500.0)
+
+
+def test_adjust_cash_subtracts(db):
+    db.seed_cash(1000.0)
+    db.adjust_cash(-300.0)
+    assert db.get_cash_eur() == pytest.approx(700.0)
+
+
+def test_adjust_cash_floors_at_zero(db):
+    db.seed_cash(100.0)
+    db.adjust_cash(-999.0)
+    assert db.get_cash_eur() == pytest.approx(0.0)
+
+
+def test_buy_trade_reduces_cash(db):
+    db.seed_cash(3000.0)
+    # buy 10 shares @ $100, eur_usd=1.0, net_cost_basis=1000.35
+    db.record_trade("AAPL", "buy", 10.0, 100.0, 0.35, 1000.35, eur_usd_rate=1.0)
+    assert db.get_cash_eur() == pytest.approx(3000.0 - 1000.35)
+
+
+def test_sell_trade_increases_cash(db):
+    db.seed_cash(3000.0)
+    db.record_trade("AAPL", "buy", 10.0, 100.0, 0.35, 1000.35, eur_usd_rate=1.0)
+    cash_after_buy = db.get_cash_eur()
+    # sell 5 shares @ $110, net_cost_basis = 550 - 0.35 = 549.65
+    db.record_trade("AAPL", "sell", 5.0, 110.0, 0.35, 549.65, eur_usd_rate=1.0)
+    assert db.get_cash_eur() == pytest.approx(cash_after_buy + 549.65)
+
+
+def test_cash_respects_eur_usd_rate(db):
+    db.seed_cash(3000.0)
+    # buy with eur_usd=1.08 — net_cost_basis_usd=324, so delta_eur = 324/1.08 = 300
+    db.record_trade("NVDA", "buy", 3.0, 108.0, 0.0, 324.0, eur_usd_rate=1.08)
+    assert db.get_cash_eur() == pytest.approx(3000.0 - 300.0)
+
+
 def test_rules_hash_is_hex(tmp_path):
     f = tmp_path / "rules.yaml"
     f.write_text("key: value\n")

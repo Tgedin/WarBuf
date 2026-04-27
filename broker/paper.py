@@ -26,7 +26,7 @@ class PaperBroker(BrokerInterface):
         return self._db.get_positions()
 
     def get_cash_usd(self) -> float:
-        return self._db.get_cash_usd()
+        return self._db.get_cash_eur() * self._eur_usd_rate
 
     def place_order(self, ticker: str, side: str, notional_usd: float) -> OrderResult:
         if side not in ("buy", "sell"):

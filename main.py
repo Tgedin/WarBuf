@@ -410,6 +410,21 @@ def cache_prewarm_job() -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="WarBuf scheduler")
+    parser.add_argument(
+        "--seed-cash", type=float, metavar="EUR",
+        help="Set paper cash balance to EUR and exit (e.g. --seed-cash 3000)",
+    )
+    args = parser.parse_args()
+
+    if args.seed_cash is not None:
+        db = Database(DB_PATH)
+        db.seed_cash(args.seed_cash)
+        print(f"[INIT] Paper cash seeded: \u20ac{args.seed_cash:,.2f}  (DB: {DB_PATH})")
+        db.close()
+        raise SystemExit(0)
+
     scheduler = BlockingScheduler(timezone="Europe/Madrid")
     scheduler.add_job(weekly_job,        "cron", day_of_week="mon", hour=9,  minute=0,  misfire_grace_time=3600)
     scheduler.add_job(monthly_job,       "cron", day_of_week="mon", hour=9,  minute=5,  misfire_grace_time=3600)

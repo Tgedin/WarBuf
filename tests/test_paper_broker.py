@@ -74,6 +74,29 @@ class TestPaperBroker:
         with pytest.raises(ValueError, match="positive"):
             broker.place_order("AAPL", "buy", -100.0)
 
+    def test_get_cash_usd_returns_zero_before_seed(self, broker):
+        assert broker.get_cash_usd() == pytest.approx(0.0)
+
+    def test_get_cash_usd_reflects_seeded_amount(self, broker, db):
+        db.seed_cash(3000.0)
+        # PaperBroker default eur_usd_rate=1.0
+        assert broker.get_cash_usd() == pytest.approx(3000.0)
+
+    def test_buy_reduces_cash(self, broker, db):
+        db.seed_cash(3000.0)
+        with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
+            broker.place_order("AAPL", "buy", 500.0)
+        # cash should be < 3000 (exact amount depends on fees)
+        assert db.get_cash_eur() < 3000.0
+
+    def test_sell_increases_cash(self, broker, db):
+        db.seed_cash(3000.0)
+        with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
+            broker.place_order("AAPL", "buy", 500.0)
+            cash_after_buy = db.get_cash_eur()
+            broker.place_order("AAPL", "sell", 300.0)
+        assert db.get_cash_eur() > cash_after_buy
+
     def test_each_order_gets_unique_id(self, broker):
         ids = set()
         with patch.object(PaperBroker, "_last_close_price", return_value=50.0):
