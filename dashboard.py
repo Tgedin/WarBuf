@@ -146,9 +146,31 @@ elif _regime == "RISK OFF":
 else:
     st.sidebar.caption("Macro: data unavailable")
 
+# ── Account summary (always visible — like a broker's header) ─────────────────
+st.sidebar.divider()
+_cash = _get_cash_eur()
+_positions_df = _query("SELECT qty, avg_cost_basis_eur FROM positions")
+_invested_eur = float((_positions_df["qty"] * _positions_df["avg_cost_basis_eur"]).sum()) if not _positions_df.empty else 0.0
+_total_eur    = (_cash or 0.0) + _invested_eur
+st.sidebar.metric("💶 Available cash", f"€{_cash:,.2f}" if _cash is not None else "—")
+st.sidebar.metric("📊 Invested (cost)", f"€{_invested_eur:,.2f}")
+st.sidebar.metric("🏦 Total portfolio", f"€{_total_eur:,.2f}")
+
 
 if page == "Portfolio":
     st.title("Current Positions")
+
+    # ── Account summary header (mirrors sidebar — visible even before first trade) ─
+    cash_eur = _get_cash_eur()
+    positions_df_hdr = _query("SELECT qty, avg_cost_basis_eur FROM positions")
+    invested_hdr = float((positions_df_hdr["qty"] * positions_df_hdr["avg_cost_basis_eur"]).sum()) if not positions_df_hdr.empty else 0.0
+    total_hdr    = (cash_eur or 0.0) + invested_hdr
+    ha, hb, hc = st.columns(3)
+    ha.metric("💶 Available cash", f"€{cash_eur:,.2f}" if cash_eur is not None else "—")
+    hb.metric("📊 Invested (cost basis)", f"€{invested_hdr:,.2f}")
+    hc.metric("🏦 Total portfolio", f"€{total_hdr:,.2f}")
+    st.divider()
+
     df = _query("""
         SELECT
             ticker,
@@ -177,7 +199,7 @@ if page == "Portfolio":
 
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Ticker", ticker)
-            c2.metric("Qty", f"{qty:.4f}")
+            c2.metric("Qty", f"{int(qty)}")
             c3.metric("Cost basis", f"€{cost:,.2f}")
             if price_eur is not None:
                 cur_val  = qty * price_eur
@@ -194,7 +216,7 @@ if page == "Portfolio":
                 c4.metric("Current value", "—")
             st.divider()
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         c1.metric("Total cost basis", f"\u20ac{total_cost:,.2f}")
         if total_value > 0:
             total_gain     = total_value - total_cost
@@ -206,9 +228,7 @@ if page == "Portfolio":
             )
         else:
             c2.metric("Total live value", "\u2014")
-        cash_eur = _get_cash_eur()
-        c3.metric("Cash", f"\u20ac{cash_eur:,.2f}" if cash_eur is not None else "\u2014")
-        c4.metric("EUR/USD rate", f"{eur_usd:.4f}")
+        c3.metric("EUR/USD rate", f"{eur_usd:.4f}")
 
 # ── Weekly Report ─────────────────────────────────────────────────────────────
 
