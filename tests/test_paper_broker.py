@@ -20,37 +20,41 @@ def broker(db):
 
 class TestPaperBroker:
     def test_buy_records_position(self, broker, db):
+        # fill_price = 100.0 * 1.001 = 100.1; qty = int(500 / 100.1) = 4
         with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
             result = broker.place_order("AAPL", "buy", 500.0)
 
         assert result.ticker == "AAPL"
         assert result.side == "buy"
-        assert result.qty == pytest.approx(5.0)
+        assert result.qty == 4
         assert result.order_id.startswith("PAPER-")
 
         positions = db.get_positions()
         assert "AAPL" in positions
-        assert positions["AAPL"]["qty"] == pytest.approx(5.0)
+        assert positions["AAPL"]["qty"] == 4
 
     def test_second_buy_averages_cost_basis(self, broker, db):
+        # buy1: fill=100.1, qty=int(500/100.1)=4
+        # buy2: fill=200.2, qty=int(400/200.2)=1 → total 5 shares
         with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
             broker.place_order("AAPL", "buy", 500.0)
         with patch.object(PaperBroker, "_last_close_price", return_value=200.0):
             broker.place_order("AAPL", "buy", 400.0)
 
         positions = db.get_positions()
-        # 5 shares @ $100 + 2 shares @ $200 = 7 shares, avg ~$142.86
-        assert positions["AAPL"]["qty"] == pytest.approx(7.0)
+        assert positions["AAPL"]["qty"] == 5
         assert positions["AAPL"]["avg_cost_basis"] == pytest.approx(
-            (500.0 + 400.0) / 7.0, rel=1e-3
+            (4 * 100.1 + 1 * 200.2) / 5, rel=1e-3
         )
 
     def test_sell_reduces_position(self, broker, db):
+        # buy: fill=100.1, qty=int(1000/100.1)=9
+        # sell: fill=99.9,  qty=int(500/99.9)=5  → 4 remaining
         with patch.object(PaperBroker, "_last_close_price", return_value=100.0):
-            broker.place_order("AAPL", "buy", 1_000.0)   # 10 shares
-            broker.place_order("AAPL", "sell", 500.0)    # 5 shares
+            broker.place_order("AAPL", "buy", 1_000.0)
+            broker.place_order("AAPL", "sell", 500.0)
 
-        assert db.get_positions()["AAPL"]["qty"] == pytest.approx(5.0)
+        assert db.get_positions()["AAPL"]["qty"] == 4
 
     def test_sell_all_removes_position(self, broker, db):
         with patch.object(PaperBroker, "_last_close_price", return_value=100.0):

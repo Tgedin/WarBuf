@@ -35,16 +35,27 @@ class PaperBroker(BrokerInterface):
             raise ValueError(f"notional_usd must be positive, got {notional_usd}")
 
         price = self._last_close_price(ticker)
-        qty = notional_usd / price
-        fees = compute_fees(side, qty, notional_usd)
-        net = notional_usd + fees.total_usd if side == "buy" else notional_usd - fees.total_usd
+        # Simulate bid-ask slippage: buys fill 0.1% above last close, sells 0.1% below.
+        # IBKR MKT orders on liquid US equities typically cost 0.05-0.15% vs mid.
+        SLIPPAGE = 0.001
+        fill_price = price * (1 + SLIPPAGE) if side == "buy" else price * (1 - SLIPPAGE)
+        # IBKR does not support fractional shares — floor to whole shares.
+        qty = int(notional_usd / fill_price)
+        if qty == 0:
+            raise ValueError(
+                f"Notional ${notional_usd:.2f} too small to buy 1 share of {ticker} "
+                f"at ${fill_price:.2f}"
+            )
+        actual_notional = qty * fill_price
+        fees = compute_fees(side, qty, actual_notional)
+        net = actual_notional + fees.total_usd if side == "buy" else actual_notional - fees.total_usd
         order_id = f"PAPER-{uuid.uuid4().hex[:8].upper()}"
 
         self._db.record_trade(
             ticker=ticker,
             side=side,
             qty=qty,
-            price_usd=price,
+            price_usd=fill_price,
             fees_usd=fees.total_usd,
             net_cost_basis=net,
             ibkr_order_id=order_id,
@@ -52,14 +63,14 @@ class PaperBroker(BrokerInterface):
         )
 
         print(
-            f"[PAPER] {side.upper():4} {qty:.4f} {ticker} "
-            f"@ ${price:.2f}  fees=${fees.total_usd:.4f}  id={order_id}"
+            f"[PAPER] {side.upper():4} {qty} {ticker} "
+            f"@ ${fill_price:.2f} (slip {SLIPPAGE*100:.1f}%)  fees=${fees.total_usd:.4f}  id={order_id}"
         )
         return OrderResult(
             ticker=ticker,
             side=side,
             qty=qty,
-            filled_price_usd=price,
+            filled_price_usd=fill_price,
             order_id=order_id,
         )
 

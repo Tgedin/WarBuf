@@ -2,6 +2,10 @@
 
 **Repository**: https://github.com/Tgedin/WarBuf
 
+> **Primary reference**: Read `GOAL.md` first. Every change you make must serve the goal
+> defined there — paper trading that faithfully simulates real IBKR execution so that
+> the June 4 go-live decision is based on real data.
+
 > **Maintenance rule**: Update this file for every substantial modification to the codebase —
 > new modules, changed architecture, altered strategy parameters, added dependencies,
 > or modified DB schema. An outdated AGENTS.md is worse than none.
@@ -41,7 +45,7 @@ WarBuf/
 │
 ├── broker/
 │   ├── base.py        ← BrokerInterface(ABC); swap broker = one new file
-│   ├── paper.py       ← paper trading; logs to SQLite, never touches real money
+│   ├── paper.py       ← paper trading; whole-share qty, 0.1% slippage, logs to SQLite, never touches real money
 │   └── ibkr.py        ← IBKR Web API via plain requests (no ib_insync — archived 2024)
 │
 ├── tests/             ← 231 tests; all external I/O mocked
@@ -466,6 +470,11 @@ Required `.env` keys:
 ---
 
 ## Agentic Behaviour (for AI agents working on this repo)
+
+> **Always check `GOAL.md` before implementing anything.** The goal is a realistic
+> paper trading simulation (May 4 → June 4) before deploying real money on IBKR.
+> Any change that makes paper execution less realistic (fractional shares, no slippage,
+> ignoring fees, bypassing the cash floor) directly undermines the project goal.
 
 ### Implementation discipline
 
