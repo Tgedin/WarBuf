@@ -44,13 +44,13 @@ services:
     networks:
       - warbuf_net
 
-  # ── IBKR Client Portal Gateway ────────────────────────────────────────────
+  # ── IBKR Client Portal Gateway (ibeam — headless auto-auth) ─────────────
   ibkr-gateway:
-    image: ghcr.io/extrange/ibkr-cp-gateway:latest
+    image: voyz/ibeam
     restart: unless-stopped
     environment:
-      IB_USERNAME: ${IB_USERNAME}
-      IB_PASSWORD: ${IB_PASSWORD}
+      IBEAM_ACCOUNT: ${IB_USERNAME}
+      IBEAM_PASSWORD: ${IB_PASSWORD}
     ports:
       - "5000:5000"
     networks:
