@@ -40,21 +40,22 @@ jobs:
       - name: Build Docker image
         run: docker build .
 
-  deploy:
-    name: Deploy to Hetzner
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.HETZNER_HOST }}
-          username: ${{ secrets.HETZNER_USER }}
-          key: ${{ secrets.HETZNER_SSH_KEY }}
-          script: |
-            cd /root/WarBuf
-            git fetch origin
-            git reset --hard origin/main
-            docker compose up -d --build
+  # deploy job disabled — project paused, Hetzner instance shut down
+  # Re-enable when local hardening and IBKR enrollment are complete.
+  # deploy:
+  #   name: Deploy to Hetzner
+  #   needs: test
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  #   steps:
+  #     - name: Deploy via SSH
+  #       uses: appleboy/ssh-action@v1.0.3
+  #       with:
+  #         host: ${{ secrets.HETZNER_HOST }}
+  #         username: ${{ secrets.HETZNER_USER }}
+  #         key: ${{ secrets.HETZNER_SSH_KEY }}
+  #         script: |
+  #           cd /root/WarBuf
+  #           git fetch origin
+  #           git reset --hard origin/main
+  #           docker compose up -d --build

@@ -3,12 +3,21 @@
 **Repository**: https://github.com/Tgedin/WarBuf
 
 > **Primary reference**: Read `GOAL.md` first. Every change you make must serve the goal
-> defined there — a full month of IBKR paper account trading (May 4 → June 4) so that
-> the June 4 go-live decision is based on real operational data, not simulation.
+> defined there — build and refine a robust IBKR paper-trading machine, starting with
+> EUR 300 and iterating through repeated paper-trading review cycles.
 
 > **Maintenance rule**: Update this file for every substantial modification to the codebase —
 > new modules, changed architecture, altered strategy parameters, added dependencies,
 > or modified DB schema. An outdated AGENTS.md is worse than none.
+
+> **Pre-deploy checklist rule**: Always read `CURRENT_STATE.md` before starting work.
+> Keep it updated as tasks are completed. Do not deploy to Hetzner unless every mandatory
+> checklist item is done.
+
+> **Session-start rule**: If `CURRENT_STATE.md` defines a next-session flow or ordered
+> implementation queue, follow the first unblocked local slice unless the user explicitly
+> overrides it. Start that slice with a failing test or failing check, validate it narrowly,
+> then update `CURRENT_STATE.md` before moving on.
 
 ---
 
@@ -47,7 +56,7 @@ WarBuf/
 ├── broker/
 │   ├── base.py        ← BrokerInterface(ABC); swap broker = one new file
 │   └── ibkr.py        ← IBKR Web API via plain requests; native GTC STP order after every buy; tickle retry
-│                        Paper phase = DU... account ID; live = U... account ID — same code, different .env
+│                        Current project scope uses the associated IBKR paper account via `.env`
 │
 ├── tests/             ← 240 tests; all external I/O mocked
 │   ├── test_scorer.py           ← 19 tests
@@ -88,8 +97,9 @@ Side effects (DB writes, HTTP calls, email) live only in `main.py`, `db.py`,
 factor weights, filters, model name — lives there.
 `main.py` loads it fresh on every job run so changes take effect without restart.
 
-Paper vs live is **not** a code or `rules.yaml` change. It is purely the `IBKR_ACCOUNT_ID`
-value in `.env`: `DU...` = paper account (virtual money), `U...` = live account (real money).
+Paper-account configuration is controlled in `.env`. The current documented project scope is
+paper-only validation and refinement, so planning and deployment checklists should assume the
+associated IBKR paper account.
 
 ### Broker is swappable
 
@@ -102,13 +112,12 @@ that interface. No other code changes.
 If `call_llm` raises, `analyse_candidates` returns neutral `AnalysisReport` objects
 (not vetoed, confidence=low). The math score governs. The system never blocks on LLM.
 
-### IBKR account ID is the safety lock
+### Paper-account boundary
 
-The bot always uses `IBKRBroker`. The account used depends on `IBKR_ACCOUNT_ID` in `.env`:
-- `DU...` prefix = IBKR paper account — real gateway, virtual money, zero financial risk
-- `U...` prefix = IBKR live account — real money; `smoke_test.py` blocks this without `CONFIRM_LIVE=true`
+The bot always uses `IBKRBroker`. The current documented scope is IBKR paper trading only:
 
-Go-live on June 4 = change one line in `.env`. No code changes, no `rules.yaml` changes.
+- `DU...` prefix = associated IBKR paper account used for validation
+- Any non-paper configuration is out of scope and should fail closed in smoke/preflight checks
 
 ### Dashboard is the primary reporting surface
 
@@ -126,14 +135,14 @@ Valid page values: `Portfolio`, `Weekly+Report`, `Trades`, `Decisions`, `Perform
 
 **Dashboard tab summary:**
 
-| Tab               | Purpose                                                                                                                                                           |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Portfolio**     | Per-position live P&L cards (current value, gross gain, net gain after fees); total live value vs cost basis. Prices fetched via yfinance, 1h cache.              |
-| **Weekly Report** | Delta-only view: score movements table (prev → curr score, Δ per ticker), active vetoes, last 20 trades. No duplication with other tabs.                          |
-| **Trades**        | Full trade log with paper/live tag.                                                                                                                               |
-| **Decisions**     | All LLM decisions as expandable cards. Header shows score trend (oldest→newest, last 5). `self_critique` styled as warning box; `algorithm_feedback` as info box. |
-| **Performance**   | Returns vs SPY chart + drawdown-from-peak chart. Header metrics: alpha vs SPY, max drawdown, WoW change.                                                          |
-| **Forecasts**     | Monthly forecast vs actual with hit rate and beat-SPY summary.                                                                                                    |
+| Tab               | Purpose                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Portfolio**     | Per-position mark-to-market P&L cards (current value, gross gain, net gain after fees); total portfolio value vs cost basis. Prices fetched via yfinance, 1h cache. |
+| **Weekly Report** | Delta-only view: score movements table (prev → curr score, Δ per ticker), active vetoes, last 20 trades. No duplication with other tabs.                            |
+| **Trades**        | Full trade log with execution-context tag.                                                                                                                          |
+| **Decisions**     | All LLM decisions as expandable cards. Header shows score trend (oldest→newest, last 5). `self_critique` styled as warning box; `algorithm_feedback` as info box.   |
+| **Performance**   | Returns vs SPY chart + drawdown-from-peak chart. Header metrics: alpha vs SPY, max drawdown, WoW change.                                                            |
+| **Forecasts**     | Monthly forecast vs actual with hit rate and beat-SPY summary.                                                                                                      |
 
 **Sidebar** always shows:
 
@@ -179,7 +188,7 @@ Checked at the start of every `monthly_job`.
 - **Stop-loss**: position down ≥ `stop_loss_pct` (15%) from cost basis → **full exit**
   - Checked **hourly** Mon–Fri during NYSE session via `intraday_job` (price-only, no rescore)
   - Also checked at weekly job start
-  - On live IBKR: a native GTC STP order is submitted at buy time so the stop executes
+  - At the broker layer, a native GTC STP order is submitted at buy time so the stop can execute
     intraday even if the bot is offline between hourly checks
 - **Score collapse**: composite score drops > `score_collapse_delta` (0.25) vs the previous week → **50% trim**
   - Checked **weekly only** — requires a full rescore, not just a price fetch
@@ -441,7 +450,7 @@ Required `.env` keys:
 | `DASHBOARD_URL`           | Full URL of the dashboard (e.g. `https://warbuf.duckdns.org`)                       |
 | `DASHBOARD_USER`          | Caddy basic_auth username                                                           |
 | `DASHBOARD_PASSWORD_HASH` | Caddy bcrypt hash — generate with `caddy hash-password --plaintext 'yourpass'`      |
-| `IBKR_*`                  | IBKR gateway credentials (only needed for live trading)                             |
+| `IBKR_*`                  | IBKR gateway credentials for paper trading and gateway authentication               |
 | `EUR_USD_RATE`            | Override exchange rate (optional; default from `rules.yaml`)                        |
 
 ---
@@ -485,6 +494,7 @@ Required `.env` keys:
 ### Tests
 
 - New logic = new test. No exceptions.
+- Prefer TDD for behavior changes: write the smallest failing test or reproducible failing check first, then implement the fix.
 - Test behavior, not implementation. Tests survive refactors.
 - **One assertion per test.** AAA: Arrange / Act / Assert.
 - All LLM calls mocked in tests — no real API calls in CI.
@@ -494,9 +504,10 @@ Required `.env` keys:
 ## Agentic Behaviour (for AI agents working on this repo)
 
 > **Always check `GOAL.md` before implementing anything.** The goal is a realistic
-> paper trading simulation (May 4 → June 4) before deploying real money on IBKR.
+> paper-trading machine that is built carefully, tested aggressively, and refined
+> through observed paper-trading behavior.
 > Any change that makes paper execution less realistic (fractional shares, no slippage,
-> ignoring fees, bypassing the cash floor) directly undermines the project goal.
+> ignoring fees, bypassing the cash floor) or weakens testability directly undermines the project goal.
 
 ### Critical thinking — reassess project assumptions periodically
 
@@ -506,26 +517,27 @@ does on tickers — this is about whether the **system design and plan** are sti
 
 **Questions to raise (pick the 1–2 most relevant to the current conversation):**
 
-| Assumption | Challenge |
-|---|---|
-| IBKR paper account → live on June 4 | Has anything critical failed or been discovered during the paper phase that warrants delaying go-live? |
-| June 4 is the right timeline | Is 30 days enough operational validation? Too long? Are there upcoming market events (Fed meeting, earnings season) that should shift the date? |
-| €3,000 starting capital | Are fees eating too large a fraction of each ~€300 position? Would €5,000 or €10,000 change the strategy meaningfully? |
-| 5 satellite stocks at ~€300 each | Is whole-share rounding creating poor coverage for high-price stocks (e.g. NVDA > €800)? Should position sizing be percentage-based rather than fixed notional? |
-| Weekly rescore + monthly buy cadence | Is the bot firing at all? Zero signals for multiple months may indicate the watchlist or filters are too restrictive. |
-| 4-factor weights (35/25/25/15) | Has `algorithm_feedback` in decisions consistently flagged one factor as noisy or miscalibrated? If yes, challenge the weight. |
-| Stop-loss at 15% | At ~€300 per position, 15% = €45 max loss. Is that the right floor given position size and strategy horizon? |
-| SPY + QQQ as core ETFs | Are macro conditions (yield curve, VIX spike, rate regime) that would make this allocation wrong? |
-| LLM veto is net positive | Are vetoes blocking legitimate candidates? Are they too permissive (missing real risks)? Review veto rate vs subsequent price moves. |
-| The dashboard surfaces the right information | After a few weeks of real data, is anything missing that would change a weekly decision? |
+| Assumption                                   | Challenge                                                                                                                            |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| One paper cycle is enough                    | Is the current paper window long enough to judge the machine, or should validation run longer before making changes?                 |
+| €300 starting capital                        | Are fees and whole-share constraints making results too noisy to learn from?                                                         |
+| Paper scale-up timing                        | Has the machine earned more paper capital, or does it still need another refinement cycle first?                                     |
+| Position count at small capital              | Is whole-share rounding creating poor coverage or over-fragmentation? Should sizing stay simpler at this stage?                      |
+| Weekly rescore + monthly buy cadence         | Is the bot firing at all? Zero signals for multiple months may indicate the watchlist or filters are too restrictive.                |
+| 4-factor weights (35/25/25/15)               | Has `algorithm_feedback` in decisions consistently flagged one factor as noisy or miscalibrated? If yes, challenge the weight.       |
+| Stop-loss at 15%                             | At ~€300 per position, 15% = €45 max loss. Is that the right floor given position size and strategy horizon?                         |
+| SPY + QQQ as core ETFs                       | Are macro conditions (yield curve, VIX spike, rate regime) that would make this allocation wrong?                                    |
+| LLM veto is net positive                     | Are vetoes blocking legitimate candidates? Are they too permissive (missing real risks)? Review veto rate vs subsequent price moves. |
+| The dashboard surfaces the right information | After a few weeks of paper data, is anything missing that would change a weekly decision?                                            |
 
 **When to raise these:**
+
 - When the user asks "what should we do next?" or "is this still the right approach?"
-- At each milestone: May 4 first trade, June 4 go-live decision, 3-month live review
-- When test results, live data, or dashboard observations contradict an assumption
+- At each milestone: first paper deployment, end of an evaluation window, after a major rules or architecture change
+- When test results, paper data, or dashboard observations contradict an assumption
 
 **How:** One sentence per relevant assumption. Not a lecture — a flag. Example:
-*"Before implementing X: with the bot running for 3 weeks, is the 15% stop-loss still the right threshold given the positions we're holding?"*
+_"Before implementing X: with the bot running for 3 weeks, is the 15% stop-loss still the right threshold given the positions we're holding?"_
 
 Do not raise all questions at once. Pick the 1–2 most relevant. Then implement what was asked.
 
@@ -533,6 +545,7 @@ Do not raise all questions at once. Pick the 1–2 most relevant. Then implement
 
 - Implement only what was asked. Do not add features, refactor unrelated code, or make
   "improvements" beyond the request scope.
+- If `CURRENT_STATE.md` gives an implementation order, do not skip to blocked or remote work while an unblocked local safety/test slice is available.
 - Do not add docstrings, comments, or type annotations to code you didn't change.
 - Do not add error handling for scenarios that cannot happen. Validate only at system
   boundaries (user input, external APIs, DB reads).
@@ -588,7 +601,7 @@ Skip task tracking for single, trivial operations.
 | Item                       | Notes                                                                                                                                                           |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | IBKR gateway Docker image  | Use `ghcr.io/extrange/ibkr-cp-gateway` or official IBKR image; needs manual login first                                                                         |
-| Live trading               | Change `IBKR_ACCOUNT_ID` in `.env` from `DU...` (paper) to `U...` (live) on June 4; set `CONFIRM_LIVE=true` to pass the smoke test guard |
+| Paper progression gate     | Decide after each scorecard review whether to extend the paper run, refine the system, or increase paper capital                                                |
 | Watchlist curation         | Review quarterly; currently 30 tickers in `rules.yaml`                                                                                                          |
 | Nightly backup destination | `nightly_backup_job` writes to `./backups/` by default; set `BACKUP_DIR` env var to point to an external volume or Backblaze B2 mount for off-server durability |
 | NYSE holidays (annual)     | Update `nyse_holidays` list in `rules.yaml` each December for the coming year                                                                                   |
@@ -604,7 +617,7 @@ The Streamlit dashboard is always accessible at your domain over HTTPS.
 `docker-compose.yml` runs three services: `caddy`, `dashboard`, and `warbuf`.
 Caddy auto-issues a Let's Encrypt TLS certificate. No certbot, no nginx.
 
-### Current live instance
+### Current hosted instance
 
 | Property  | Value                                                                  |
 | --------- | ---------------------------------------------------------------------- |
@@ -753,7 +766,7 @@ Zero-downtime: the scheduler only runs at 09:00 Monday — deploy any other time
 | GitHub Secrets           | Store SSH key + env vars securely | Free on all plans                            |
 | Dependabot               | Auto-PR for dependency updates    | Free on all plans                            |
 
-### Security hardening checklist (before going live)
+### Security hardening checklist (before redeploying the paper stack)
 
 - [ ] Hetzner firewall: allow only ports 80, 443, and 22 (restrict 22 to your IP)
 - [ ] SSH key-only auth on the server; disable password login
@@ -761,7 +774,7 @@ Zero-downtime: the scheduler only runs at 09:00 Monday — deploy any other time
 - [ ] `pip-audit` in CI — fails build on any HIGH/CRITICAL CVE in dependencies
 - [ ] GitHub branch protection on `main`: require PR + CI pass before merge
 - [ ] Dependabot enabled: auto-PRs for dependency updates weekly
-- [ ] `IBKR_*` credentials rotated after every paper phase ends
+- [ ] `IBKR_*` credentials reviewed regularly and no unused secrets remain on the server
 
 ---
 
